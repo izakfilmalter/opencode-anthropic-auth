@@ -12,13 +12,16 @@
 
 An [OpenCode](https://github.com/anomalyco/opencode) plugin that provides Anthropic OAuth authentication, enabling Claude Pro/Max users to use their subscription directly with OpenCode.
 
+> [!NOTE]
+> This version targets the [OpenCode V2 beta plugin API](https://v2.opencode.ai/docs/build/plugins/). It is not compatible with the legacy `plugin` configuration field or the V1 plugin API.
+
 ## Usage
 
 Add the plugin to your OpenCode configuration:
 
 ```json
 {
-  "plugin": ["@ex-machina/opencode-anthropic-auth"]
+  "plugins": ["@ex-machina/opencode-anthropic-auth"]
 }
 ```
 
@@ -31,13 +34,14 @@ Add the plugin to your OpenCode configuration:
 
 ```json
 {
-  "plugin": ["@ex-machina/opencode-anthropic-auth@1.8.0"]
+  "plugins": ["@ex-machina/opencode-anthropic-auth@2.0.0"]
 }
 ```
 
 ## Authentication Methods
 
-The plugin provides three authentication options:
+The plugin provides two Anthropic OAuth options alongside OpenCode's built-in
+manual API key option:
 
 - **Claude Pro/Max** - OAuth flow via `claude.ai` for Pro/Max subscribers. Uses your existing subscription at no additional API cost.
 - **Create an API Key** - OAuth flow via `console.anthropic.com` that creates an API key on your behalf.

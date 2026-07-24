@@ -4,6 +4,7 @@ dist/
 # for now...
 .opencode/
 .claude/
+opencode.json
 
 mise.local.toml
 
