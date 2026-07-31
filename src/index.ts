@@ -14,16 +14,19 @@ import {
 const INTEGRATION_ID = 'anthropic'
 const MAX_METHOD_ID = 'claude-max'
 const API_KEY_METHOD_ID = 'create-api-key'
-const AUTH_TYPE_METADATA = 'opencodeAnthropicAuthType'
+export const AUTH_TYPE_METADATA = 'opencodeAnthropicAuthType'
 
 /**
- * A synthetic AI SDK package name keeps Anthropic models on OpenCode's generic
- * AI SDK path. The built-in Anthropic fast path does not expose an SDK hook,
- * which this plugin needs in order to rewrite OAuth requests and responses.
+ * An importable AI SDK shim keeps Anthropic models on OpenCode's generic AI SDK
+ * path. V2's dynamic-provider hook runs before external hooks and requires the
+ * package to resolve before this plugin can replace its SDK with the OAuth-aware
+ * implementation.
  */
-export const ANTHROPIC_AUTH_PACKAGE =
-  'aisdk:@ex-machina/opencode-anthropic-auth/anthropic'
-const ANTHROPIC_AUTH_SDK_PACKAGE = ANTHROPIC_AUTH_PACKAGE.slice('aisdk:'.length)
+export const ANTHROPIC_AUTH_SDK_PACKAGE = new URL(
+  './sdk-provider.js',
+  import.meta.url,
+).href
+export const ANTHROPIC_AUTH_PACKAGE = `aisdk:${ANTHROPIC_AUTH_SDK_PACKAGE}`
 
 type OAuthCredential = Credential.OAuth
 type FetchLike = (

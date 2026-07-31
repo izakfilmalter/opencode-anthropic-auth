@@ -4,6 +4,7 @@ import AnthropicAuthPlugin, {
   createCredentialRefresher,
   createOAuthFetch,
 } from '../index'
+import { createAnthropicAuth } from '../sdk-provider'
 
 type Callback = (input: any) => Promise<void> | void
 type Authorization = {
@@ -155,6 +156,12 @@ describe('V2 plugin definition', () => {
     expect(provider.package).toBe(ANTHROPIC_AUTH_PACKAGE)
     expect(model.package).toBe(ANTHROPIC_AUTH_PACKAGE)
     expect(model.cost[0]!.input).toBe(3)
+  })
+
+  test('uses an importable local shim for the synthetic AI SDK package', () => {
+    expect(ANTHROPIC_AUTH_PACKAGE).toStartWith('aisdk:file:')
+    expect(ANTHROPIC_AUTH_PACKAGE).toEndWith('/sdk-provider.js')
+    expect(createAnthropicAuth).toBeFunction()
   })
 
   test('preserves cost tiers while zeroing subscription costs', async () => {
