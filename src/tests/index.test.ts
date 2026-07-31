@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
-import { Effect } from 'effect'
 import AnthropicAuthPlugin, {
   ANTHROPIC_AUTH_PACKAGE,
   createCredentialRefresher,
@@ -9,7 +8,7 @@ import AnthropicAuthPlugin, {
 type Callback = (input: any) => Promise<void> | void
 type Authorization = {
   url: string
-  callback: (code: string) => Effect.Effect<any, unknown>
+  callback: (code: string) => Promise<any>
 }
 
 function createMockContext(credential?: unknown) {
@@ -222,14 +221,10 @@ describe('OAuth authorization adapters', () => {
 
     const { captured } = await setup()
     const { methods } = applyIntegrationTransform(captured.integration!)
-    const authorization = (await Effect.runPromise(
-      methods[0].authorize({}),
-    )) as Authorization
+    const authorization = (await methods[0].authorize({})) as Authorization
     const url = new URL(authorization.url)
     const state = url.searchParams.get('state')!
-    const credential = await Effect.runPromise(
-      authorization.callback(`code#${state}`),
-    )
+    const credential = await authorization.callback(`code#${state}`)
 
     expect(credential).toMatchObject({
       type: 'oauth',
@@ -267,13 +262,9 @@ describe('OAuth authorization adapters', () => {
 
     const { captured } = await setup()
     const { methods } = applyIntegrationTransform(captured.integration!)
-    const authorization = (await Effect.runPromise(
-      methods[1].authorize({}),
-    )) as Authorization
+    const authorization = (await methods[1].authorize({})) as Authorization
     const state = new URL(authorization.url).searchParams.get('state')!
-    const credential = await Effect.runPromise(
-      authorization.callback(`code#${state}`),
-    )
+    const credential = await authorization.callback(`code#${state}`)
 
     expect(credential).toMatchObject({
       type: 'oauth',

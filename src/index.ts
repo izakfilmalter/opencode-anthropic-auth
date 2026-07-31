@@ -1,6 +1,5 @@
 import { createAnthropic } from '@ai-sdk/anthropic'
-import { Credential, Integration, Plugin } from '@opencode-ai/plugin/v2'
-import { Effect } from 'effect'
+import { Credential, Integration, Model, Plugin } from '@opencode-ai/plugin'
 import { authorize, exchange } from './auth.ts'
 import { CLIENT_ID, TOKEN_URL } from './constants.ts'
 import {
@@ -26,14 +25,7 @@ export const ANTHROPIC_AUTH_PACKAGE =
   'aisdk:@ex-machina/opencode-anthropic-auth/anthropic'
 const ANTHROPIC_AUTH_SDK_PACKAGE = ANTHROPIC_AUTH_PACKAGE.slice('aisdk:'.length)
 
-type OAuthCredential = {
-  type: 'oauth'
-  methodID: string
-  refresh: string
-  access: string
-  expires: number
-  metadata?: Record<string, unknown>
-}
+type OAuthCredential = Credential.OAuth
 type FetchLike = (
   input: string | URL | Request,
   init?: RequestInit,
@@ -264,10 +256,6 @@ async function exchangeAPIKeyCredential(
   )
 }
 
-function effectPromise<A>(run: () => Promise<A>) {
-  return Effect.tryPromise({ try: run, catch: (error) => error })
-}
-
 export const AnthropicAuthPlugin = Plugin.define({
   id: 'ex-machina.anthropic-auth',
   setup: async (ctx) => {
@@ -285,18 +273,17 @@ export const AnthropicAuthPlugin = Plugin.define({
           type: 'oauth',
           label: 'Claude Pro/Max',
         },
-        authorize: () =>
-          Effect.promise(async () => {
-            const authorization = await authorize('max')
-            return {
-              url: authorization.url,
-              instructions: 'Paste the authorization code here:',
-              mode: 'code' as const,
-              callback: (code: string) =>
-                effectPromise(() => exchangeMaxCredential(code, authorization)),
-            }
-          }),
-        refresh: (credential) => effectPromise(() => refresh(credential)),
+        authorize: async () => {
+          const authorization = await authorize('max')
+          return {
+            url: authorization.url,
+            instructions: 'Paste the authorization code here:',
+            mode: 'code' as const,
+            callback: (code: string) =>
+              exchangeMaxCredential(code, authorization),
+          }
+        },
+        refresh,
       })
 
       draft.method.update({
@@ -306,19 +293,16 @@ export const AnthropicAuthPlugin = Plugin.define({
           type: 'oauth',
           label: 'Create an API Key',
         },
-        authorize: () =>
-          Effect.promise(async () => {
-            const authorization = await authorize('console')
-            return {
-              url: authorization.url,
-              instructions: 'Paste the authorization code here:',
-              mode: 'code' as const,
-              callback: (code: string) =>
-                effectPromise(() =>
-                  exchangeAPIKeyCredential(code, authorization),
-                ),
-            }
-          }),
+        authorize: async () => {
+          const authorization = await authorize('console')
+          return {
+            url: authorization.url,
+            instructions: 'Paste the authorization code here:',
+            mode: 'code' as const,
+            callback: (code: string) =>
+              exchangeAPIKeyCredential(code, authorization),
+          }
+        },
       })
     })
 
@@ -344,15 +328,18 @@ export const AnthropicAuthPlugin = Plugin.define({
       })
 
       const record = catalog.provider.get(INTEGRATION_ID)
-      for (const model of record?.models.values() ?? []) {
-        catalog.model.update(INTEGRATION_ID, model.id, (draft) => {
+      for (const modelID of record?.models.keys() ?? []) {
+        catalog.model.update(INTEGRATION_ID, modelID, (draft) => {
           draft.package = ANTHROPIC_AUTH_PACKAGE
           if (!usingSubscription) return
           draft.cost = draft.cost.map((cost) => ({
             ...cost,
-            input: 0,
-            output: 0,
-            cache: { read: 0, write: 0 },
+            input: Model.Cost.fields.input.zero,
+            output: Model.Cost.fields.output.zero,
+            cache: {
+              read: Model.Cost.fields.cache.fields.read.zero,
+              write: Model.Cost.fields.cache.fields.write.zero,
+            },
           }))
         })
       }
