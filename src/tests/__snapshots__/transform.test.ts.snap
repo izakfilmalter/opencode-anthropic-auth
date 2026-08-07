@@ -154,6 +154,9 @@ exports[`sanitizeSystemText – realistic prompt rewriteRequestBody output snaps
       "type": "text",
     },
     {
+      "cache_control": {
+        "type": "ephemeral",
+      },
       "text": 
 "You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
 
@@ -302,6 +305,9 @@ Run \`bun run build\` to compile."
       "type": "function",
     },
     {
+      "cache_control": {
+        "type": "ephemeral",
+      },
       "name": "mcp_Edit",
       "type": "function",
     },

@@ -277,6 +277,49 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === 'object' && !Array.isArray(value)
 }
 
+const MAX_CACHE_BREAKPOINTS = 4
+const EPHEMERAL_CACHE_CONTROL = { type: 'ephemeral' } as const
+
+/**
+ * Ensure requests retain useful prompt-cache boundaries even when OpenCode's
+ * provider routing does not recognize the plugin's synthetic AI SDK package.
+ * Existing provider markers win, and Anthropic's four-breakpoint cap is never
+ * exceeded.
+ */
+export function ensureCacheBreakpoints(parsed: Record<string, unknown>): void {
+  const tools = Array.isArray(parsed.tools) ? parsed.tools.filter(isRecord) : []
+  const system = Array.isArray(parsed.system)
+    ? parsed.system.filter(isRecord)
+    : []
+  const messages = Array.isArray(parsed.messages)
+    ? parsed.messages.filter(isRecord)
+    : []
+  const contentBlocks = messages.flatMap((message) =>
+    Array.isArray(message.content) ? message.content.filter(isRecord) : [],
+  )
+
+  let count = [...tools, ...system, ...contentBlocks].filter(
+    (block) => block.cache_control !== undefined,
+  ).length
+
+  const mark = (block: Record<string, unknown> | undefined) => {
+    if (!block || block.cache_control !== undefined) return
+    if (count >= MAX_CACHE_BREAKPOINTS) return
+    block.cache_control = EPHEMERAL_CACHE_CONTROL
+    count++
+  }
+
+  // Prioritize the broadest reusable prefix first. A message breakpoint also
+  // covers the tools and system prefix that precede it on Anthropic's wire.
+  const latestUser = messages.findLast((message) => message.role === 'user')
+  const latestUserContent = Array.isArray(latestUser?.content)
+    ? latestUser.content.filter(isRecord).at(-1)
+    : undefined
+  mark(latestUserContent)
+  mark(system.at(-1))
+  mark(tools.at(-1))
+}
+
 /**
  * Sanitize system prompt and prepend Claude Code identity.
  * Handles all Anthropic API system formats: undefined, string, or array of text blocks.
@@ -357,6 +400,8 @@ export function rewriteRequestBody(body: string): string {
     if (billingHeader && Array.isArray(parsed.system)) {
       parsed.system.unshift({ type: 'text', text: billingHeader })
     }
+
+    ensureCacheBreakpoints(parsed)
 
     return prefixToolNames(parsed)
   } catch {

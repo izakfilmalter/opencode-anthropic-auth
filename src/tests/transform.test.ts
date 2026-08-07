@@ -639,6 +639,51 @@ describe('prependClaudeCodeIdentity', () => {
 })
 
 describe('rewriteRequestBody', () => {
+  test('adds prompt-cache breakpoints when the provider omitted them', () => {
+    const body = JSON.stringify({
+      tools: [{ name: 'bash', description: 'Run a command' }],
+      system: [{ type: 'text', text: 'Stable system instructions' }],
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'first turn' }] },
+        { role: 'assistant', content: [{ type: 'text', text: 'response' }] },
+        { role: 'user', content: [{ type: 'text', text: 'latest turn' }] },
+      ],
+    })
+
+    const result = JSON.parse(rewriteRequestBody(body))
+
+    expect(result.tools.at(-1).cache_control).toEqual({ type: 'ephemeral' })
+    expect(result.system.at(-1).cache_control).toEqual({ type: 'ephemeral' })
+    expect(result.messages.at(-1).content.at(-1).cache_control).toEqual({
+      type: 'ephemeral',
+    })
+    expect(result.messages[0].content[0].cache_control).toBeUndefined()
+  })
+
+  test('preserves provider cache markers and never exceeds four breakpoints', () => {
+    const marker = { type: 'ephemeral', ttl: '1h' }
+    const body = JSON.stringify({
+      tools: [{ name: 'bash', cache_control: marker }],
+      system: [
+        { type: 'text', text: 'A', cache_control: marker },
+        { type: 'text', text: 'B', cache_control: marker },
+      ],
+      messages: [
+        {
+          role: 'user',
+          content: [{ type: 'text', text: 'first', cache_control: marker }],
+        },
+        { role: 'user', content: [{ type: 'text', text: 'latest' }] },
+      ],
+    })
+
+    const result = JSON.parse(rewriteRequestBody(body))
+    const serialized = JSON.stringify(result)
+    expect(serialized.match(/cache_control/g)).toHaveLength(4)
+    expect(result.tools[0].cache_control).toEqual(marker)
+    expect(result.messages.at(-1).content[0].cache_control).toBeUndefined()
+  })
+
   test('prefixes tool names and rewrites system prompt', () => {
     const body = JSON.stringify({
       tools: [{ name: 'bash', type: 'function' }],
