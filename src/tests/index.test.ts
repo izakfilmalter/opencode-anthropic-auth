@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { Integration } from '@opencode-ai/plugin'
 import AnthropicAuthPlugin, {
   ANTHROPIC_AUTH_PACKAGE,
   createCredentialRefresher,
@@ -300,7 +301,7 @@ describe('credential refresh', () => {
 
   const expired = {
     type: 'oauth' as const,
-    methodID: 'claude-max',
+    methodID: Integration.MethodID.make('claude-max'),
     refresh: 'old-refresh',
     access: 'expired',
     expires: Date.now() - 1,
