@@ -280,6 +280,60 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 const MAX_CACHE_BREAKPOINTS = 4
 const EPHEMERAL_CACHE_CONTROL = { type: 'ephemeral' } as const
 
+function escapeSystemUpdateText(text: string): string {
+  return text
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+}
+
+/**
+ * Anthropic only accepts an ordinary contentful chronological system message
+ * after a user message and immediately before an assistant message (or at the
+ * end of the array). OpenCode V2 can emit updates at other chronological
+ * positions, so lower those updates to visible user text while preserving their
+ * position. This matches OpenCode's native Anthropic fallback for unsupported
+ * models/positions. Server-tool system boundaries are also lowered here: the
+ * generic AI SDK wire format does not retain enough metadata to validate them
+ * as safely as OpenCode's native route can.
+ */
+export function normalizeSystemMessagePositions(
+  parsed: Record<string, unknown>,
+): void {
+  if (!Array.isArray(parsed.messages)) return
+
+  parsed.messages = parsed.messages.map((value, index, messages) => {
+    if (!isRecord(value) || value.role !== 'system') return value
+
+    const content = Array.isArray(value.content) ? value.content : []
+    const directiveOnly = content.length === 0 && isRecord(value.output_config)
+    const previous = messages[index - 1]
+    const followsUser = isRecord(previous) && previous.role === 'user'
+    const next = messages[index + 1]
+    const precedesAssistant = isRecord(next) && next.role === 'assistant'
+    if (
+      directiveOnly ||
+      (followsUser && (precedesAssistant || next === undefined))
+    ) {
+      return value
+    }
+
+    const text = content
+      .filter(isRecord)
+      .map((block) => (typeof block.text === 'string' ? block.text : ''))
+      .join('\n')
+    const lastBlock = content.findLast(isRecord)
+    const cacheControl = lastBlock?.cache_control
+    const block: Record<string, unknown> = {
+      type: 'text',
+      text: `<system-update>\n${escapeSystemUpdateText(text)}\n</system-update>`,
+    }
+    if (cacheControl !== undefined) block.cache_control = cacheControl
+
+    return { role: 'user', content: [block] }
+  })
+}
+
 /**
  * Ensure requests retain useful prompt-cache boundaries even when OpenCode's
  * provider routing does not recognize the plugin's synthetic AI SDK package.
@@ -394,6 +448,8 @@ export function rewriteRequestBody(body: string): string {
 
     // Sanitize system prompt and prepend Claude Code identity
     parsed.system = prependClaudeCodeIdentity(parsed.system)
+
+    normalizeSystemMessagePositions(parsed)
 
     // Prepend the billing header as a separate system block so the
     // final layout is: [billing header, identity, ...rest]

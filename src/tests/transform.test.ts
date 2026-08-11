@@ -639,6 +639,98 @@ describe('prependClaudeCodeIdentity', () => {
 })
 
 describe('rewriteRequestBody', () => {
+  test('lowers system updates that do not precede an assistant message', () => {
+    const body = JSON.stringify({
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'first turn' }] },
+        {
+          role: 'system',
+          content: [
+            {
+              type: 'text',
+              text: 'Updated <instructions> & context',
+              cache_control: { type: 'ephemeral' },
+            },
+          ],
+        },
+        { role: 'user', content: [{ type: 'text', text: 'next turn' }] },
+      ],
+    })
+
+    const result = JSON.parse(rewriteRequestBody(body))
+
+    expect(result.messages[1]).toEqual({
+      role: 'user',
+      content: [
+        {
+          type: 'text',
+          text: [
+            '<system-update>',
+            'Updated &lt;instructions&gt; &amp; context',
+            '</system-update>',
+          ].join('\n'),
+          cache_control: { type: 'ephemeral' },
+        },
+      ],
+    })
+  })
+
+  test('keeps supported and directive-only system message positions intact', () => {
+    const body = JSON.stringify({
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'first turn' }] },
+        {
+          role: 'system',
+          content: [{ type: 'text', text: 'Before assistant' }],
+        },
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'response' }],
+        },
+        {
+          role: 'system',
+          content: [],
+          output_config: { effort: 'high' },
+        },
+        { role: 'user', content: [{ type: 'text', text: 'next turn' }] },
+      ],
+    })
+
+    const result = JSON.parse(rewriteRequestBody(body))
+
+    expect(result.messages[1].role).toBe('system')
+    expect(result.messages[3]).toEqual({
+      role: 'system',
+      content: [],
+      output_config: { effort: 'high' },
+    })
+  })
+
+  test('lowers a system update that follows an assistant message', () => {
+    const body = JSON.stringify({
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'first turn' }] },
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'response' }],
+        },
+        {
+          role: 'system',
+          content: [{ type: 'text', text: 'Updated instructions' }],
+        },
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'next response' }],
+        },
+      ],
+    })
+
+    const result = JSON.parse(rewriteRequestBody(body))
+
+    expect(result.messages[2].role).toBe('user')
+    expect(result.messages[2].content[0].text).toContain('Updated instructions')
+  })
+
   test('adds prompt-cache breakpoints when the provider omitted them', () => {
     const body = JSON.stringify({
       tools: [{ name: 'bash', description: 'Run a command' }],
