@@ -287,17 +287,26 @@ describe('OAuth authorization adapters', () => {
 
 describe('credential refresh', () => {
   const originalFetch = globalThis.fetch
-  const originalSetTimeout = globalThis.setTimeout
 
   beforeEach(() => {
     globalThis.fetch = originalFetch
-    globalThis.setTimeout = originalSetTimeout
   })
 
   afterEach(() => {
     globalThis.fetch = originalFetch
-    globalThis.setTimeout = originalSetTimeout
   })
+
+  const tokenResponse = () =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({
+          refresh_token: 'new-refresh',
+          access_token: 'new-access',
+          expires_in: 3600,
+        }),
+        { status: 200 },
+      ),
+    )
 
   const expired = {
     type: 'oauth' as const,
@@ -340,33 +349,102 @@ describe('credential refresh', () => {
 
   test('retries transient server failures', async () => {
     let refreshCalls = 0
-    // @ts-expect-error test replaces the timer with a synchronous implementation
-    globalThis.setTimeout = mock((handler: () => unknown) => {
-      handler()
-      return 0
-    })
-    globalThis.fetch = mock(() => {
+    const upstream = mock(() => {
       refreshCalls++
       if (refreshCalls === 1) {
         return Promise.resolve(new Response('temporary', { status: 500 }))
       }
-      return Promise.resolve(
-        new Response(
-          JSON.stringify({
-            refresh_token: 'new-refresh',
-            access_token: 'new-access',
-            expires_in: 3600,
-          }),
-          { status: 200 },
-        ),
-      )
-    }) as unknown as typeof fetch
+      return tokenResponse()
+    })
 
-    await createCredentialRefresher()({
+    await createCredentialRefresher(new Map(), {
+      fetch: upstream,
+      retryBaseDelayMs: 1,
+    })({
       ...expired,
       refresh: 'retry-refresh',
     })
     expect(refreshCalls).toBe(2)
+  })
+
+  test('a stalled refresh rejects within the attempt deadline', async () => {
+    let refreshCalls = 0
+    const stalled = mock(() => {
+      refreshCalls++
+      return new Promise<Response>(() => {})
+    })
+    const inflight = new Map<string, Promise<any>>()
+    const refresh = createCredentialRefresher(inflight, {
+      fetch: stalled,
+      attemptTimeoutMs: 20,
+      retryBaseDelayMs: 1,
+    })
+
+    const started = Date.now()
+    await expect(
+      refresh({ ...expired, refresh: 'stalled-refresh' }),
+    ).rejects.toThrow(/timed out/)
+    expect(Date.now() - started).toBeLessThan(1_000)
+    expect(refreshCalls).toBe(3)
+    expect(inflight.size).toBe(0)
+  })
+
+  test('a timed-out refresh is evicted so the next caller starts fresh', async () => {
+    let refreshCalls = 0
+    const upstream = mock(() => {
+      refreshCalls++
+      if (refreshCalls <= 3) return new Promise<Response>(() => {})
+      return tokenResponse()
+    })
+    const inflight = new Map<string, Promise<any>>()
+    const refresh = createCredentialRefresher(inflight, {
+      fetch: upstream,
+      attemptTimeoutMs: 20,
+      retryBaseDelayMs: 1,
+    })
+    const credential = { ...expired, refresh: 'evicted-refresh' }
+
+    await expect(refresh(credential)).rejects.toThrow(/timed out/)
+    expect(inflight.size).toBe(0)
+
+    const result = await refresh(credential)
+    expect(refreshCalls).toBe(4)
+    expect(result).toMatchObject({ access: 'new-access' })
+  })
+
+  test('retries a timed-out attempt like a network error', async () => {
+    let refreshCalls = 0
+    const upstream = mock(() => {
+      refreshCalls++
+      if (refreshCalls === 1) return new Promise<Response>(() => {})
+      return tokenResponse()
+    })
+    const refresh = createCredentialRefresher(new Map(), {
+      fetch: upstream,
+      attemptTimeoutMs: 20,
+      retryBaseDelayMs: 1,
+    })
+
+    const result = await refresh({ ...expired, refresh: 'timeout-retry' })
+    expect(refreshCalls).toBe(2)
+    expect(result).toMatchObject({ access: 'new-access' })
+  })
+
+  test('does not retry non-retryable HTTP failures', async () => {
+    let refreshCalls = 0
+    const upstream = mock(() => {
+      refreshCalls++
+      return Promise.resolve(new Response('bad token', { status: 401 }))
+    })
+    const refresh = createCredentialRefresher(new Map(), {
+      fetch: upstream,
+      retryBaseDelayMs: 1,
+    })
+
+    await expect(
+      refresh({ ...expired, refresh: 'denied-refresh' }),
+    ).rejects.toThrow(/401/)
+    expect(refreshCalls).toBe(1)
   })
 })
 

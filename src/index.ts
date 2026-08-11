@@ -1,5 +1,6 @@
 import { createAnthropic } from '@ai-sdk/anthropic'
 import { Credential, Integration, Model, Plugin } from '@opencode-ai/plugin'
+import { Data, Duration, Effect, Schedule } from 'effect'
 import { authorize, exchange } from './auth.ts'
 import { CLIENT_ID, TOKEN_URL } from './constants.ts'
 import {
@@ -65,6 +66,8 @@ function isNetworkError(error: unknown): boolean {
   return (
     error instanceof Error &&
     (error.message.includes('fetch failed') ||
+      error.name === 'AbortError' ||
+      error.name === 'TimeoutError' ||
       ('code' in error &&
         (error.code === 'ECONNRESET' ||
           error.code === 'ECONNREFUSED' ||
@@ -73,24 +76,62 @@ function isNetworkError(error: unknown): boolean {
   )
 }
 
-async function refreshCredential(
-  credential: OAuthCredential,
-): Promise<OAuthCredential> {
-  if (!credential.refresh) {
-    throw new Error('Token refresh failed: credential has no refresh token')
+const REFRESH_ATTEMPT_TIMEOUT_MS = 15_000
+const REFRESH_MAX_RETRIES = 2
+const REFRESH_RETRY_BASE_DELAY_MS = 500
+const SUBSCRIPTION_CHECK_TIMEOUT_MS = 10_000
+
+class RefreshRequestError extends Data.TaggedError('RefreshRequestError')<{
+  message: string
+  cause: unknown
+}> {}
+
+class RefreshHttpError extends Data.TaggedError('RefreshHttpError')<{
+  message: string
+  status: number
+}> {}
+
+class RefreshTimeoutError extends Data.TaggedError('RefreshTimeoutError')<{
+  message: string
+}> {}
+
+class RefreshInvalidResponseError extends Data.TaggedError(
+  'RefreshInvalidResponseError',
+)<{ message: string }> {}
+
+type RefreshError =
+  | RefreshRequestError
+  | RefreshHttpError
+  | RefreshTimeoutError
+  | RefreshInvalidResponseError
+
+function isRetryableRefreshError(error: RefreshError): boolean {
+  switch (error._tag) {
+    case 'RefreshTimeoutError':
+      return true
+    case 'RefreshHttpError':
+      // Effect's HttpClient transient set, matching OpenCode's own HTTP retries.
+      return error.status === 408 || error.status === 429 || error.status >= 500
+    case 'RefreshRequestError':
+      return isNetworkError(error.cause)
+    case 'RefreshInvalidResponseError':
+      return false
   }
+}
 
-  const maxRetries = 2
-  const baseDelayMs = 500
+type RefreshOptions = {
+  fetch?: FetchLike
+  attemptTimeoutMs?: number
+  retryBaseDelayMs?: number
+}
 
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      if (attempt > 0) {
-        const delay = baseDelayMs * 2 ** (attempt - 1)
-        await new Promise((resolve) => setTimeout(resolve, delay))
-      }
-
-      const response = await fetch(TOKEN_URL, {
+const refreshRequest = Effect.fn('refreshRequest')(function* (
+  credential: OAuthCredential,
+  upstream: FetchLike,
+) {
+  const response = yield* Effect.tryPromise({
+    try: (signal) =>
+      upstream(TOKEN_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -102,54 +143,115 @@ async function refreshCredential(
           refresh_token: credential.refresh,
           client_id: CLIENT_ID,
         }),
-      })
+        signal,
+      }),
+    catch: (cause) =>
+      new RefreshRequestError({
+        cause,
+        message:
+          cause instanceof Error
+            ? `Token refresh request failed: ${cause.message}`
+            : 'Token refresh request failed',
+      }),
+  })
 
-      if (!response.ok) {
-        if (response.status >= 500 && attempt < maxRetries) {
-          await response.body?.cancel()
-          continue
-        }
+  if (!response.ok) {
+    const body = yield* Effect.promise(() => response.text().catch(() => ''))
+    return yield* Effect.fail(
+      new RefreshHttpError({
+        status: response.status,
+        message: `Token refresh failed: ${response.status} — ${body}`,
+      }),
+    )
+  }
 
-        const body = await response.text().catch(() => '')
-        throw new Error(`Token refresh failed: ${response.status} — ${body}`)
-      }
-
-      const json = (await response.json()) as {
+  const json = yield* Effect.tryPromise({
+    try: () =>
+      response.json() as Promise<{
         refresh_token?: string
         access_token?: string
         expires_in?: number
-      }
-      if (!json.access_token || typeof json.expires_in !== 'number') {
-        throw new Error('Token refresh failed: invalid token response')
-      }
-
-      return oauthCredential(
-        credential.methodID,
-        {
-          refresh: json.refresh_token ?? credential.refresh,
-          access: json.access_token,
-          expires: Date.now() + json.expires_in * 1000,
-        },
-        'oauth',
-      )
-    } catch (error) {
-      if (attempt < maxRetries && isNetworkError(error)) continue
-      throw error
-    }
+      }>,
+    catch: () =>
+      new RefreshInvalidResponseError({
+        message: 'Token refresh failed: invalid token response',
+      }),
+  })
+  if (!json.access_token || typeof json.expires_in !== 'number') {
+    return yield* Effect.fail(
+      new RefreshInvalidResponseError({
+        message: 'Token refresh failed: invalid token response',
+      }),
+    )
   }
 
-  throw new Error('Token refresh exhausted all retries')
+  return oauthCredential(
+    credential.methodID,
+    {
+      refresh: json.refresh_token ?? credential.refresh,
+      access: json.access_token,
+      expires: Date.now() + json.expires_in * 1000,
+    },
+    'oauth',
+  )
+})
+
+/**
+ * Refreshes an OAuth credential with a hard per-attempt deadline. Every attempt
+ * aborts its fetch and fails with `RefreshTimeoutError` once the deadline
+ * passes, so the returned promise always settles — a stalled connection can
+ * never wedge a caller (or the daemon boot path that awaits it).
+ */
+async function refreshCredential(
+  credential: OAuthCredential,
+  options: RefreshOptions = {},
+): Promise<OAuthCredential> {
+  if (!credential.refresh) {
+    throw new Error('Token refresh failed: credential has no refresh token')
+  }
+
+  const upstream = options.fetch ?? fetch
+  const attemptTimeoutMs =
+    options.attemptTimeoutMs ?? REFRESH_ATTEMPT_TIMEOUT_MS
+  const retryBaseDelayMs =
+    options.retryBaseDelayMs ?? REFRESH_RETRY_BASE_DELAY_MS
+
+  return Effect.runPromise(
+    refreshRequest(credential, upstream).pipe(
+      Effect.timeoutOrElse({
+        duration: Duration.millis(attemptTimeoutMs),
+        orElse: () =>
+          Effect.fail(
+            new RefreshTimeoutError({
+              message: `Token refresh timed out after ${attemptTimeoutMs}ms`,
+            }),
+          ),
+      }),
+      Effect.retry({
+        times: REFRESH_MAX_RETRIES,
+        schedule: Schedule.exponential(Duration.millis(retryBaseDelayMs)).pipe(
+          Schedule.jittered,
+        ),
+        while: isRetryableRefreshError,
+      }),
+    ),
+  )
 }
 
 /** Deduplicates concurrent refreshes for the same rotating refresh token. */
 const sharedRefreshes = new Map<string, Promise<OAuthCredential>>()
 
-export function createCredentialRefresher(inflight = sharedRefreshes) {
+export function createCredentialRefresher(
+  inflight = sharedRefreshes,
+  options: RefreshOptions = {},
+) {
   return (credential: OAuthCredential): Promise<OAuthCredential> => {
     const existing = inflight.get(credential.refresh)
     if (existing) return existing
 
-    const pending = refreshCredential(credential)
+    // refreshCredential always settles within its bounded attempt deadlines,
+    // so a cached in-flight promise can never poison later callers.
+    const pending = refreshCredential(credential, options)
     inflight.set(credential.refresh, pending)
     void pending.then(
       () => {
@@ -323,7 +425,17 @@ export const AnthropicAuthPlugin = Plugin.define({
         return false
       }
     }
-    usingSubscription = await subscriptionActive()
+    // Bound plugin setup: a hung connection resolve must not wedge daemon
+    // boot. On timeout fall back to key-auth pricing; the sdk hook and the
+    // connection watcher below correct `usingSubscription` once resolvable.
+    usingSubscription = await Effect.runPromise(
+      Effect.promise(() => subscriptionActive()).pipe(
+        Effect.timeoutOrElse({
+          duration: Duration.millis(SUBSCRIPTION_CHECK_TIMEOUT_MS),
+          orElse: () => Effect.succeed(false),
+        }),
+      ),
+    )
 
     await ctx.catalog.transform((catalog) => {
       catalog.provider.update(INTEGRATION_ID, (provider) => {
