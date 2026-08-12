@@ -512,8 +512,14 @@ export const AnthropicAuthPlugin = Plugin.define({
 
     return async () => {
       stopped = true
-      await events.return?.()
-      await watcher
+      // Do not await iterator.return() here. The watcher may already be blocked
+      // in next(), and async iterators serialize return() behind that pending
+      // read. OpenCode closes the plugin scope after cleanup, which interrupts
+      // the underlying event stream just like its native providers' scoped
+      // watcher fibers. Waiting here would deadlock plugin hot reload and every
+      // model request waiting for the new plugin generation.
+      void events.return?.().catch(() => {})
+      void watcher
     }
   },
 })

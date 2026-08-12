@@ -65,6 +65,21 @@ function createMockContext(credential?: unknown) {
   }
 }
 
+function createBlockingEventContext() {
+  let returnCalled = false
+  const iterator = (async function* () {
+    await new Promise(() => {})
+  })()
+  const close = iterator.return.bind(iterator)
+  iterator.return = (value) => {
+    returnCalled = true
+    return close(value)
+  }
+  const mockContext = createMockContext()
+  mockContext.context.event.subscribe = () => iterator
+  return { mockContext, returnCalled: () => returnCalled }
+}
+
 function applyIntegrationTransform(callback: Callback) {
   const integration = { id: 'anthropic', name: 'anthropic' }
   const methods: any[] = []
@@ -131,6 +146,21 @@ describe('V2 plugin definition', () => {
   test('exports a V2 plugin with a stable ID and setup function', () => {
     expect(AnthropicAuthPlugin.id).toBe('ex-machina.anthropic-auth')
     expect(AnthropicAuthPlugin.setup).toBeFunction()
+  })
+
+  test('cleanup does not wait for a pending event', async () => {
+    const { mockContext, returnCalled } = createBlockingEventContext()
+    const cleanup = await AnthropicAuthPlugin.setup(
+      mockContext.context as never,
+    )
+
+    const result = await Promise.race([
+      Promise.resolve(cleanup?.()).then(() => 'cleaned'),
+      Bun.sleep(100).then(() => 'timed-out'),
+    ])
+
+    expect(result).toBe('cleaned')
+    expect(returnCalled()).toBeTrue()
   })
 
   test('registers both OAuth methods on the Anthropic integration', async () => {
