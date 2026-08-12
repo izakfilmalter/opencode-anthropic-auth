@@ -1,6 +1,11 @@
 import { createAnthropic } from '@ai-sdk/anthropic'
-import { Credential, Integration, Model, Plugin } from '@opencode-ai/plugin'
-import { Data, Duration, Effect, Schedule } from 'effect'
+import {
+  Credential,
+  Integration,
+  Model,
+  Plugin,
+} from '@opencode-ai/plugin/effect'
+import { Data, Duration, Effect, Schedule, Semaphore, Stream } from 'effect'
 import { authorize, exchange } from './auth.ts'
 import { CLIENT_ID, TOKEN_URL } from './constants.ts'
 import {
@@ -363,10 +368,11 @@ async function exchangeAPIKeyCredential(
 
 export const AnthropicAuthPlugin = Plugin.define({
   id: 'ex-machina.anthropic-auth',
-  setup: async (ctx) => {
+  effect: Effect.fn(function* (ctx) {
     const refresh = createCredentialRefresher()
+    const loading = Semaphore.makeUnsafe(1)
 
-    await ctx.integration.transform((draft) => {
+    yield* ctx.integration.transform((draft) => {
       draft.update(INTEGRATION_ID, (integration) => {
         integration.name = 'Anthropic'
       })
@@ -378,17 +384,19 @@ export const AnthropicAuthPlugin = Plugin.define({
           type: 'oauth',
           label: 'Claude Pro/Max',
         },
-        authorize: async () => {
-          const authorization = await authorize('max')
-          return {
-            url: authorization.url,
-            instructions: 'Paste the authorization code here:',
-            mode: 'code' as const,
-            callback: (code: string) =>
-              exchangeMaxCredential(code, authorization),
-          }
-        },
-        refresh,
+        authorize: () =>
+          Effect.promise(() => authorize('max')).pipe(
+            Effect.map((authorization) => ({
+              url: authorization.url,
+              instructions: 'Paste the authorization code here:',
+              mode: 'code' as const,
+              callback: (code: string) =>
+                Effect.promise(() =>
+                  exchangeMaxCredential(code, authorization),
+                ),
+            })),
+          ),
+        refresh: (credential) => Effect.promise(() => refresh(credential)),
       })
 
       draft.method.update({
@@ -398,46 +406,45 @@ export const AnthropicAuthPlugin = Plugin.define({
           type: 'oauth',
           label: 'Create an API Key',
         },
-        authorize: async () => {
-          const authorization = await authorize('console')
-          return {
-            url: authorization.url,
-            instructions: 'Paste the authorization code here:',
-            mode: 'code' as const,
-            callback: (code: string) =>
-              exchangeAPIKeyCredential(code, authorization),
-          }
-        },
+        authorize: () =>
+          Effect.promise(() => authorize('console')).pipe(
+            Effect.map((authorization) => ({
+              url: authorization.url,
+              instructions: 'Paste the authorization code here:',
+              mode: 'code' as const,
+              callback: (code: string) =>
+                Effect.promise(() =>
+                  exchangeAPIKeyCredential(code, authorization),
+                ),
+            })),
+          ),
       })
     })
 
     let usingSubscription = false
-    const subscriptionActive = async () => {
-      try {
+    const subscriptionActive = Effect.fn('AnthropicAuth.subscriptionActive')(
+      function* () {
         const connection =
-          await ctx.integration.connection.active(INTEGRATION_ID)
+          yield* ctx.integration.connection.active(INTEGRATION_ID)
         const credential = connection
-          ? await ctx.integration.connection.resolve(connection)
+          ? yield* ctx.integration.connection
+              .resolve(connection)
+              .pipe(Effect.catch(() => Effect.succeed(undefined)))
           : undefined
         return isSubscriptionCredential(credential)
-      } catch {
-        // An invalid or stale saved connection should not prevent plugin loading.
-        return false
-      }
-    }
+      },
+    )
     // Bound plugin setup: a hung connection resolve must not wedge daemon
-    // boot. On timeout fall back to key-auth pricing; the sdk hook and the
-    // connection watcher below correct `usingSubscription` once resolvable.
-    usingSubscription = await Effect.runPromise(
-      Effect.promise(() => subscriptionActive()).pipe(
-        Effect.timeoutOrElse({
-          duration: Duration.millis(SUBSCRIPTION_CHECK_TIMEOUT_MS),
-          orElse: () => Effect.succeed(false),
-        }),
-      ),
+    // boot. On timeout fall back to key-auth pricing; the connection watcher
+    // below corrects `usingSubscription` once resolution succeeds.
+    usingSubscription = yield* subscriptionActive().pipe(
+      Effect.timeoutOrElse({
+        duration: Duration.millis(SUBSCRIPTION_CHECK_TIMEOUT_MS),
+        orElse: () => Effect.succeed(false),
+      }),
     )
 
-    await ctx.catalog.transform((catalog) => {
+    yield* ctx.catalog.transform((catalog) => {
       catalog.provider.update(INTEGRATION_ID, (provider) => {
         provider.package = ANTHROPIC_AUTH_PACKAGE
       })
@@ -460,68 +467,63 @@ export const AnthropicAuthPlugin = Plugin.define({
       }
     })
 
-    await ctx.aisdk.hook('sdk', async (event) => {
-      if (event.package !== ANTHROPIC_AUTH_SDK_PACKAGE) return
+    yield* ctx.aisdk.hook('sdk', (event) =>
+      Effect.gen(function* () {
+        if (event.package !== ANTHROPIC_AUTH_SDK_PACKAGE) return
 
-      const oauth = event.options[AUTH_TYPE_METADATA] === 'oauth'
-      if (usingSubscription !== oauth) {
-        usingSubscription = oauth
-        await ctx.catalog.reload()
-      }
-
-      const { [AUTH_TYPE_METADATA]: _authType, ...options } = event.options
-      if (!oauth) {
-        event.sdk = createAnthropic(options)
-        return
-      }
-
-      const accessToken = options.apiKey
-      if (typeof accessToken !== 'string' || !accessToken) {
-        throw new Error('Anthropic OAuth credential has no access token')
-      }
-      const upstream =
-        typeof options.fetch === 'function'
-          ? (options.fetch as FetchLike)
-          : undefined
-      event.sdk = createAnthropic({
-        ...options,
-        fetch: createOAuthFetch(accessToken, upstream) as typeof fetch,
-      })
-    })
-
-    const events = ctx.event.subscribe()[Symbol.asyncIterator]()
-    let stopped = false
-    const watcher = (async () => {
-      while (!stopped) {
-        const next = await events.next()
-        if (next.done) return
-        if (
-          next.value.type !== 'integration.connection.updated' ||
-          next.value.data.integrationID !== INTEGRATION_ID
-        ) {
-          continue
+        const oauth = event.options[AUTH_TYPE_METADATA] === 'oauth'
+        if (usingSubscription !== oauth) {
+          usingSubscription = oauth
+          yield* ctx.catalog.reload()
         }
-        const active = await subscriptionActive()
-        if (usingSubscription === active) continue
-        usingSubscription = active
-        await ctx.catalog.reload()
-      }
-    })().catch(() => {
-      // Losing the event stream should not disable authentication or requests.
-    })
 
-    return async () => {
-      stopped = true
-      // Do not await iterator.return() here. The watcher may already be blocked
-      // in next(), and async iterators serialize return() behind that pending
-      // read. OpenCode closes the plugin scope after cleanup, which interrupts
-      // the underlying event stream just like its native providers' scoped
-      // watcher fibers. Waiting here would deadlock plugin hot reload and every
-      // model request waiting for the new plugin generation.
-      void events.return?.().catch(() => {})
-      void watcher
-    }
-  },
+        const { [AUTH_TYPE_METADATA]: _authType, ...options } = event.options
+        if (!oauth) {
+          event.sdk = createAnthropic(options)
+          return
+        }
+
+        const accessToken = options.apiKey
+        if (typeof accessToken !== 'string' || !accessToken) {
+          return yield* Effect.die(
+            new Error('Anthropic OAuth credential has no access token'),
+          )
+        }
+        const upstream =
+          typeof options.fetch === 'function'
+            ? (options.fetch as FetchLike)
+            : undefined
+        event.sdk = createAnthropic({
+          ...options,
+          fetch: createOAuthFetch(accessToken, upstream) as typeof fetch,
+        })
+      }),
+    )
+
+    const refreshSubscription = () =>
+      loading.withPermit(
+        Effect.gen(function* () {
+          const active = yield* subscriptionActive()
+          if (usingSubscription === active) return
+          usingSubscription = active
+          yield* ctx.catalog.reload()
+        }),
+      )
+
+    // Match the native OpenAI/Codex provider: the watcher is a child of the
+    // plugin scope, so every reload interrupts its pending stream read before
+    // the next generation starts. No async iterator or cleanup promise escapes.
+    yield* ctx.event.subscribe().pipe(
+      Stream.filter(
+        (event) =>
+          event.type === 'integration.connection.updated' &&
+          event.data.integrationID === INTEGRATION_ID,
+      ),
+      Stream.runForEach(refreshSubscription),
+      Effect.catch(() => Effect.void),
+      Effect.forkScoped({ startImmediately: true }),
+    )
+  }),
 })
 
 export default AnthropicAuthPlugin

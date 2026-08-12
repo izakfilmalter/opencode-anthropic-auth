@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { Integration } from '@opencode-ai/plugin'
+import { Effect, type Scope, Stream } from 'effect'
 import AnthropicAuthPlugin, {
   ANTHROPIC_AUTH_PACKAGE,
   createCredentialRefresher,
@@ -7,10 +8,10 @@ import AnthropicAuthPlugin, {
 } from '../index'
 import { createAnthropicAuth } from '../sdk-provider'
 
-type Callback = (input: any) => Promise<void> | void
+type Callback = (input: any) => unknown
 type Authorization = {
   url: string
-  callback: (code: string) => Promise<any>
+  callback: (code: string) => Effect.Effect<any, unknown>
 }
 
 function createMockContext(credential?: unknown) {
@@ -19,65 +20,74 @@ function createMockContext(credential?: unknown) {
     catalog?: Callback
     sdk?: Callback
   } = {}
-  const registration = { dispose: mock(() => Promise.resolve()) }
-  const reload = mock(() => Promise.resolve())
+  const registration = { dispose: Effect.void }
+  const reload = mock(() => Effect.void)
 
   return {
     captured,
     reload,
     context: {
       integration: {
-        transform: mock(async (callback: Callback) => {
+        transform: mock((callback: Callback) => {
           captured.integration = callback
-          return registration
+          return Effect.succeed(registration)
         }),
         connection: {
           active: mock(() =>
-            Promise.resolve(
+            Effect.succeed(
               credential
                 ? { type: 'credential', id: 'credential-1' }
                 : undefined,
             ),
           ),
-          resolve: mock(() => Promise.resolve(credential)),
+          resolve: mock(() => Effect.succeed(credential)),
         },
       },
       catalog: {
-        transform: mock(async (callback: Callback) => {
+        transform: mock((callback: Callback) => {
           captured.catalog = callback
-          return registration
+          return Effect.succeed(registration)
         }),
         reload,
       },
       aisdk: {
-        hook: mock(async (_name: string, callback: Callback) => {
+        hook: mock((_name: string, callback: Callback) => {
           captured.sdk = callback
-          return registration
+          return Effect.succeed(registration)
         }),
       },
       event: {
-        subscribe: () =>
-          (async function* () {
-            yield* []
-          })(),
+        subscribe: () => Stream.empty,
       },
     },
   }
 }
 
-function createBlockingEventContext() {
-  let returnCalled = false
-  const iterator = (async function* () {
-    await new Promise(() => {})
-  })()
-  const close = iterator.return.bind(iterator)
-  iterator.return = (value) => {
-    returnCalled = true
-    return close(value)
-  }
+function createScopedEventContext() {
+  let subscribed = 0
+  let disposed = 0
   const mockContext = createMockContext()
-  mockContext.context.event.subscribe = () => iterator
-  return { mockContext, returnCalled: () => returnCalled }
+  ;(
+    mockContext.context.event as {
+      subscribe: () => Stream.Stream<unknown, never, Scope.Scope>
+    }
+  ).subscribe = () =>
+    Stream.fromEffect(
+      Effect.acquireRelease(
+        Effect.sync(() => {
+          subscribed++
+        }),
+        () =>
+          Effect.sync(() => {
+            disposed++
+          }),
+      ),
+    ).pipe(Stream.concat(Stream.never))
+  return {
+    mockContext,
+    subscribed: () => subscribed,
+    disposed: () => disposed,
+  }
 }
 
 function applyIntegrationTransform(callback: Callback) {
@@ -138,29 +148,43 @@ function applyCatalogTransform(callback: Callback) {
 
 async function setup(credential?: unknown) {
   const mockContext = createMockContext(credential)
-  await AnthropicAuthPlugin.setup(mockContext.context as never)
+  await Effect.runPromise(
+    Effect.scoped(AnthropicAuthPlugin.effect(mockContext.context as never)),
+  )
   return mockContext
 }
 
 describe('V2 plugin definition', () => {
-  test('exports a V2 plugin with a stable ID and setup function', () => {
+  test('exports a native Effect plugin with a stable ID', () => {
     expect(AnthropicAuthPlugin.id).toBe('ex-machina.anthropic-auth')
-    expect(AnthropicAuthPlugin.setup).toBeFunction()
+    expect(AnthropicAuthPlugin.effect).toBeFunction()
   })
 
-  test('cleanup does not wait for a pending event', async () => {
-    const { mockContext, returnCalled } = createBlockingEventContext()
-    const cleanup = await AnthropicAuthPlugin.setup(
-      mockContext.context as never,
-    )
-
+  test('scope teardown interrupts and disposes a pending event watcher', async () => {
+    const { mockContext, subscribed, disposed } = createScopedEventContext()
     const result = await Promise.race([
-      Promise.resolve(cleanup?.()).then(() => 'cleaned'),
+      Effect.runPromise(
+        Effect.scoped(AnthropicAuthPlugin.effect(mockContext.context as never)),
+      ).then(() => 'cleaned'),
       Bun.sleep(100).then(() => 'timed-out'),
     ])
 
     expect(result).toBe('cleaned')
-    expect(returnCalled()).toBeTrue()
+    expect(subscribed()).toBe(1)
+    expect(disposed()).toBe(1)
+  })
+
+  test('repeated plugin generations do not accumulate event watchers', async () => {
+    const { mockContext, subscribed, disposed } = createScopedEventContext()
+
+    for (let generation = 0; generation < 3; generation++) {
+      await Effect.runPromise(
+        Effect.scoped(AnthropicAuthPlugin.effect(mockContext.context as never)),
+      )
+    }
+
+    expect(subscribed()).toBe(3)
+    expect(disposed()).toBe(3)
   })
 
   test('registers both OAuth methods on the Anthropic integration', async () => {
@@ -225,7 +249,7 @@ describe('V2 plugin definition', () => {
       options: { apiKey: 'sk-test' },
       sdk: undefined,
     }
-    await captured.sdk!(event)
+    await Effect.runPromise(captured.sdk!(event) as Effect.Effect<void>)
 
     expect(event.sdk).toBeDefined()
     expect(reload).not.toHaveBeenCalled()
@@ -259,10 +283,14 @@ describe('OAuth authorization adapters', () => {
 
     const { captured } = await setup()
     const { methods } = applyIntegrationTransform(captured.integration!)
-    const authorization = (await methods[0].authorize({})) as Authorization
+    const authorization = (await Effect.runPromise(
+      methods[0].authorize({}),
+    )) as Authorization
     const url = new URL(authorization.url)
     const state = url.searchParams.get('state')!
-    const credential = await authorization.callback(`code#${state}`)
+    const credential = await Effect.runPromise(
+      authorization.callback(`code#${state}`),
+    )
 
     expect(credential).toMatchObject({
       type: 'oauth',
@@ -300,9 +328,13 @@ describe('OAuth authorization adapters', () => {
 
     const { captured } = await setup()
     const { methods } = applyIntegrationTransform(captured.integration!)
-    const authorization = (await methods[1].authorize({})) as Authorization
+    const authorization = (await Effect.runPromise(
+      methods[1].authorize({}),
+    )) as Authorization
     const state = new URL(authorization.url).searchParams.get('state')!
-    const credential = await authorization.callback(`code#${state}`)
+    const credential = await Effect.runPromise(
+      authorization.callback(`code#${state}`),
+    )
 
     expect(credential).toMatchObject({
       type: 'oauth',
