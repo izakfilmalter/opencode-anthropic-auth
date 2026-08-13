@@ -219,6 +219,40 @@ describe('V2 plugin definition', () => {
     expect(createAnthropicAuth).toBeFunction()
   })
 
+  test('makes the package shim OAuth-aware without the later SDK hook', async () => {
+    let captured: RequestInit | undefined
+    const upstream = mock(
+      (_input: string | URL | Request, init?: RequestInit) => {
+        captured = init
+        return Promise.resolve(new Response(null, { status: 200 }))
+      },
+    )
+    const provider = createAnthropicAuth({
+      apiKey: 'oauth-access',
+      opencodeAnthropicAuthType: 'oauth',
+      fetch: upstream,
+    })
+
+    // The provider exposes its configured fetch through requests made by a
+    // language model. Calling the fetch seam directly keeps this regression
+    // focused on the compaction race: the dynamic package factory ran, while
+    // the external SDK hook did not.
+    const options = (
+      provider as unknown as {
+        languageModel: (id: string) => { config: { fetch?: typeof fetch } }
+      }
+    ).languageModel('claude-opus-5').config
+    await options.fetch!('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': 'oauth-access' },
+      body: JSON.stringify({ messages: [] }),
+    })
+
+    const headers = captured!.headers as Headers
+    expect(headers.get('authorization')).toBe('Bearer oauth-access')
+    expect(headers.get('x-api-key')).toBeNull()
+  })
+
   test('preserves cost tiers while zeroing subscription costs', async () => {
     const credential = {
       type: 'oauth',

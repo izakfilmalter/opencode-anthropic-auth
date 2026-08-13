@@ -9,6 +9,7 @@ export const CODE_CALLBACK_URL =
   'https://platform.claude.com/oauth/code/callback'
 
 export const TOKEN_URL = 'https://platform.claude.com/v1/oauth/token'
+export const AUTH_TYPE_METADATA = 'opencodeAnthropicAuthType'
 
 export const OAUTH_SCOPES = [
   'org:create_api_key',
