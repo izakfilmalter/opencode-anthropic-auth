@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test'
 import dedent from 'dedent'
 import {
+  CLAUDE_CODE_CONCISE_OUTPUT_STYLE,
   CLAUDE_CODE_IDENTITY,
   OPENCODE_IDENTITY_PREFIX,
   REQUIRED_BETAS,
 } from '../constants'
 import {
+  appendConciseOutputStyle,
   createStrippedStream,
   isInsecure,
   mergeBetaHeaders,
@@ -639,6 +641,48 @@ describe('prependClaudeCodeIdentity', () => {
 })
 
 describe('rewriteRequestBody', () => {
+  test('defaults to Claude Code concise output style', () => {
+    const body = JSON.stringify({
+      messages: [{ role: 'user', content: 'hello' }],
+      system: 'You are helpful.',
+    })
+
+    const result = JSON.parse(rewriteRequestBody(body))
+
+    expect(result.system.at(-1)).toEqual({
+      type: 'text',
+      text: CLAUDE_CODE_CONCISE_OUTPUT_STYLE,
+      cache_control: { type: 'ephemeral' },
+    })
+  })
+
+  test('does not add concise instructions for the default output style', () => {
+    const body = JSON.stringify({
+      messages: [{ role: 'user', content: 'hello' }],
+      system: 'You are helpful.',
+    })
+
+    const result = JSON.parse(rewriteRequestBody(body, 'Default'))
+
+    expect(
+      result.system.some(
+        (block: { text: string }) =>
+          block.text === CLAUDE_CODE_CONCISE_OUTPUT_STYLE,
+      ),
+    ).toBe(false)
+  })
+
+  test('does not duplicate existing concise instructions', () => {
+    const system = [
+      {
+        type: 'text',
+        text: `Existing instructions\n\n${CLAUDE_CODE_CONCISE_OUTPUT_STYLE}`,
+      },
+    ]
+
+    expect(appendConciseOutputStyle(system)).toBe(system)
+  })
+
   test('lowers system updates that do not precede an assistant message', () => {
     const body = JSON.stringify({
       messages: [
@@ -784,7 +828,7 @@ describe('rewriteRequestBody', () => {
     })
     const result = JSON.parse(rewriteRequestBody(body))
     expect(result.tools[0].name).toBe('mcp_Bash')
-    // system[0] = billing header, system[1] = identity, system[2] = rest
+    // system[0] = billing, system[1] = identity, system[2] = rest, then style
     expect(result.system[0].text).toContain('x-anthropic-billing-header')
     expect(result.system[1].text).toBe(CLAUDE_CODE_IDENTITY)
     expect(result.system[2].text).toBe('You are a helpful assistant.')
@@ -795,8 +839,8 @@ describe('rewriteRequestBody', () => {
       messages: [{ role: 'user', content: 'hi' }],
     })
     const result = JSON.parse(rewriteRequestBody(body))
-    // system[0] = billing header, system[1] = identity (no rest block)
-    expect(result.system).toHaveLength(2)
+    // system[0] = billing header, system[1] = identity, system[2] = style
+    expect(result.system).toHaveLength(3)
     expect(result.system[0].text).toContain('x-anthropic-billing-header')
     expect(result.system[1].text).toBe(CLAUDE_CODE_IDENTITY)
   })
@@ -821,10 +865,11 @@ describe('rewriteRequestBody', () => {
     //    [0] "You are OpenCode..." + generic content + "# Code References\n..."
     //    [1] "Additional context block"
     //
-    //  Expected output (three-block layout):
+    //  Expected output:
     //    system[0] = billing header
     //    system[1] = identity
-    //    system[2..n] = sanitized system blocks
+    //    system[2..n-1] = sanitized system blocks
+    //    system[n] = concise output style
     //    User messages are untouched.
 
     const systemPrompt = [
@@ -860,8 +905,8 @@ describe('rewriteRequestBody', () => {
 
     const result = JSON.parse(rewriteRequestBody(body))
 
-    // Three-block layout: billing header, identity, sanitized blocks
-    expect(result.system).toHaveLength(4)
+    // Layout: billing header, identity, sanitized blocks, output style
+    expect(result.system).toHaveLength(5)
     expect(result.system[0].text).toContain('x-anthropic-billing-header')
     expect(result.system[1].text).toBe(CLAUDE_CODE_IDENTITY)
     expect(result.system[2].text).toContain('You have access to tools.')
@@ -877,8 +922,8 @@ describe('rewriteRequestBody', () => {
   test('handles body with no messages array', () => {
     const body = JSON.stringify({ model: 'claude-3' })
     const result = JSON.parse(rewriteRequestBody(body))
-    // No messages → no billing header; system[0] = identity only
-    expect(result.system).toHaveLength(1)
+    // No messages → no billing header; identity followed by output style
+    expect(result.system).toHaveLength(2)
     expect(result.system[0].text).toBe(CLAUDE_CODE_IDENTITY)
   })
 
@@ -889,8 +934,8 @@ describe('rewriteRequestBody', () => {
     })
     const result = JSON.parse(rewriteRequestBody(body))
 
-    // system[0] = billing, system[1] = identity, system[2] = rest
-    expect(result.system).toHaveLength(3)
+    // system[0] = billing, system[1] = identity, system[2] = rest, then style
+    expect(result.system).toHaveLength(4)
     expect(result.system[0].text).toContain('x-anthropic-billing-header')
     expect(result.system[1].text).toBe(CLAUDE_CODE_IDENTITY)
     expect(result.system[2].text).toBe('Custom instructions for the assistant.')
@@ -914,8 +959,8 @@ describe('rewriteRequestBody', () => {
     })
     const result = JSON.parse(rewriteRequestBody(body))
 
-    // system[0] = billing, system[1] = identity, system[2..3] = rest
-    expect(result.system).toHaveLength(4)
+    // system[0] = billing, system[1] = identity, system[2..3] = rest, then style
+    expect(result.system).toHaveLength(5)
     expect(result.system[0].text).toContain('x-anthropic-billing-header')
     expect(result.system[1].text).toBe(CLAUDE_CODE_IDENTITY)
     expect(result.system[2].text).toBe('Block A instructions')
@@ -933,8 +978,8 @@ describe('rewriteRequestBody', () => {
     })
     const result = JSON.parse(rewriteRequestBody(body))
 
-    // No user messages → no billing header; system[0] = identity, system[1] = rest
-    expect(result.system).toHaveLength(2)
+    // No user messages → identity, original system, then output style
+    expect(result.system).toHaveLength(3)
     expect(result.system[0].text).toBe(CLAUDE_CODE_IDENTITY)
     expect(result.system[1].text).toBe('Some instructions')
   })
@@ -950,8 +995,8 @@ describe('rewriteRequestBody', () => {
     })
     const result = JSON.parse(rewriteRequestBody(body))
 
-    // system[0] = billing, system[1] = identity, system[2..4] = original blocks
-    expect(result.system).toHaveLength(5)
+    // system[0] = billing, system[1] = identity, original blocks, then style
+    expect(result.system).toHaveLength(6)
     expect(result.system[0].text).toContain('x-anthropic-billing-header')
     expect(result.system[1].text).toBe(CLAUDE_CODE_IDENTITY)
     expect(result.system[2].text).toBe('First block')

@@ -1,5 +1,5 @@
 import { createAnthropic } from '@ai-sdk/anthropic'
-import { AUTH_TYPE_METADATA } from './constants.ts'
+import { AUTH_TYPE_METADATA, OUTPUT_STYLE_METADATA } from './constants.ts'
 import { createOAuthFetch } from './oauth-fetch.ts'
 
 /**
@@ -8,7 +8,11 @@ import { createOAuthFetch } from './oauth-fetch.ts'
  * so this factory must be safe even when that later hook is not yet installed.
  */
 export const createAnthropicAuth = (options: Record<string, unknown>) => {
-  const { [AUTH_TYPE_METADATA]: authType, ...providerOptions } = options
+  const {
+    [AUTH_TYPE_METADATA]: authType,
+    [OUTPUT_STYLE_METADATA]: outputStyle,
+    ...providerOptions
+  } = options
   if (authType !== 'oauth') return createAnthropic(providerOptions)
 
   const accessToken = providerOptions.apiKey
@@ -21,6 +25,8 @@ export const createAnthropicAuth = (options: Record<string, unknown>) => {
       : undefined
   return createAnthropic({
     ...providerOptions,
-    fetch: createOAuthFetch(accessToken, upstream) as typeof fetch,
+    fetch: createOAuthFetch(accessToken, upstream, {
+      outputStyle: outputStyle === 'Default' ? 'Default' : 'Concise',
+    }) as typeof fetch,
   })
 }

@@ -1,4 +1,5 @@
 import {
+  type ClaudeOutputStyle,
   createStrippedStream,
   isInsecure,
   mergeHeaders,
@@ -12,17 +13,24 @@ export type FetchLike = (
   init?: RequestInit,
 ) => Promise<Response>
 
+export type OAuthFetchOptions = {
+  outputStyle?: ClaudeOutputStyle
+}
+
 /** Build the fetch implementation installed into the Anthropic AI SDK. */
 export function createOAuthFetch(
   accessToken: string,
   upstream: FetchLike = fetch,
+  options: OAuthFetchOptions = {},
 ): FetchLike {
   return async (input, init) => {
     const requestHeaders = mergeHeaders(input, init)
     setOAuthHeaders(requestHeaders, accessToken)
 
     let body = init?.body
-    if (body && typeof body === 'string') body = rewriteRequestBody(body)
+    if (body && typeof body === 'string') {
+      body = rewriteRequestBody(body, options.outputStyle ?? 'Concise')
+    }
 
     const rewritten = rewriteUrl(input)
     const requestInit: RequestInit & {

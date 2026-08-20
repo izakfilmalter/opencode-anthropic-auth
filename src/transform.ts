@@ -1,5 +1,6 @@
 import { buildBillingHeaderValue } from './cch.ts'
 import {
+  CLAUDE_CODE_CONCISE_OUTPUT_STYLE,
   CLAUDE_CODE_ENTRYPOINT,
   CLAUDE_CODE_IDENTITY,
   OPENCODE_IDENTITY_PREFIX,
@@ -273,6 +274,8 @@ export function sanitizeSystemText(text: string): string {
 
 type SystemBlock = { type: string; text: string; [k: string]: unknown }
 
+export type ClaudeOutputStyle = 'Default' | 'Concise'
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === 'object' && !Array.isArray(value)
 }
@@ -428,10 +431,26 @@ export function prependClaudeCodeIdentity(system: unknown): SystemBlock[] {
   return [identityBlock, ...sanitized]
 }
 
+/** Append Claude Code's concise output style unless it is already present. */
+export function appendConciseOutputStyle(system: SystemBlock[]): SystemBlock[] {
+  if (
+    system.some((block) =>
+      block.text.includes(CLAUDE_CODE_CONCISE_OUTPUT_STYLE),
+    )
+  ) {
+    return system
+  }
+
+  return [...system, { type: 'text', text: CLAUDE_CODE_CONCISE_OUTPUT_STYLE }]
+}
+
 /**
  * Rewrite the full request body: sanitize system prompt and prefix tool names.
  */
-export function rewriteRequestBody(body: string): string {
+export function rewriteRequestBody(
+  body: string,
+  outputStyle: ClaudeOutputStyle = 'Concise',
+): string {
   try {
     const parsed = JSON.parse(body)
     const billingHeader =
@@ -448,6 +467,9 @@ export function rewriteRequestBody(body: string): string {
 
     // Sanitize system prompt and prepend Claude Code identity
     parsed.system = prependClaudeCodeIdentity(parsed.system)
+    if (outputStyle === 'Concise') {
+      parsed.system = appendConciseOutputStyle(parsed.system)
+    }
 
     normalizeSystemMessagePositions(parsed)
 

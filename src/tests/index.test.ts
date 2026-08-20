@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { Integration } from '@opencode-ai/plugin'
 import { Effect, type Scope, Stream } from 'effect'
+import { CLAUDE_CODE_CONCISE_OUTPUT_STYLE } from '../constants'
 import AnthropicAuthPlugin, {
   ANTHROPIC_AUTH_PACKAGE,
   createCredentialRefresher,
@@ -14,7 +15,10 @@ type Authorization = {
   callback: (code: string) => Effect.Effect<any, unknown>
 }
 
-function createMockContext(credential?: unknown) {
+function createMockContext(
+  credential?: unknown,
+  options: Record<string, unknown> = {},
+) {
   const captured: {
     integration?: Callback
     catalog?: Callback
@@ -27,6 +31,7 @@ function createMockContext(credential?: unknown) {
     captured,
     reload,
     context: {
+      options,
       integration: {
         transform: mock((callback: Callback) => {
           captured.integration = callback
@@ -113,6 +118,7 @@ function applyCatalogTransform(callback: Callback) {
     id: 'anthropic',
     name: 'Anthropic',
     package: 'aisdk:@ai-sdk/anthropic',
+    settings: {} as Record<string, unknown>,
   }
   const model = {
     id: 'claude-sonnet',
@@ -146,8 +152,11 @@ function applyCatalogTransform(callback: Callback) {
   return { provider, model }
 }
 
-async function setup(credential?: unknown) {
-  const mockContext = createMockContext(credential)
+async function setup(
+  credential?: unknown,
+  options: Record<string, unknown> = {},
+) {
+  const mockContext = createMockContext(credential, options)
   await Effect.runPromise(
     Effect.scoped(AnthropicAuthPlugin.effect(mockContext.context as never)),
   )
@@ -158,6 +167,16 @@ describe('V2 plugin definition', () => {
   test('exports a native Effect plugin with a stable ID', () => {
     expect(AnthropicAuthPlugin.id).toBe('ex-machina.anthropic-auth')
     expect(AnthropicAuthPlugin.effect).toBeFunction()
+  })
+
+  test('rejects an invalid output style option', async () => {
+    const { context } = createMockContext(undefined, { outputStyle: 'verbose' })
+
+    await expect(
+      Effect.runPromise(
+        Effect.scoped(AnthropicAuthPlugin.effect(context as never)),
+      ),
+    ).rejects.toThrow(/expected "Concise" or "Default"/)
   })
 
   test('scope teardown interrupts and disposes a pending event watcher', async () => {
@@ -209,8 +228,16 @@ describe('V2 plugin definition', () => {
     const { provider, model } = applyCatalogTransform(captured.catalog!)
 
     expect(provider.package).toBe(ANTHROPIC_AUTH_PACKAGE)
+    expect(provider.settings.opencodeAnthropicOutputStyle).toBe('Concise')
     expect(model.package).toBe(ANTHROPIC_AUTH_PACKAGE)
     expect(model.cost[0]!.input).toBe(3)
+  })
+
+  test('passes the default output-style opt-out to the provider shim', async () => {
+    const { captured } = await setup(undefined, { outputStyle: 'Default' })
+    const { provider } = applyCatalogTransform(captured.catalog!)
+
+    expect(provider.settings.opencodeAnthropicOutputStyle).toBe('Default')
   })
 
   test('uses an importable local shim for the synthetic AI SDK package', () => {
@@ -251,6 +278,40 @@ describe('V2 plugin definition', () => {
     const headers = captured!.headers as Headers
     expect(headers.get('authorization')).toBe('Bearer oauth-access')
     expect(headers.get('x-api-key')).toBeNull()
+  })
+
+  test('makes the package shim honor the default output-style opt-out', async () => {
+    let captured: RequestInit | undefined
+    const upstream = mock(
+      (_input: string | URL | Request, init?: RequestInit) => {
+        captured = init
+        return Promise.resolve(new Response(null, { status: 200 }))
+      },
+    )
+    const provider = createAnthropicAuth({
+      apiKey: 'oauth-access',
+      opencodeAnthropicAuthType: 'oauth',
+      opencodeAnthropicOutputStyle: 'Default',
+      fetch: upstream,
+    })
+    const options = (
+      provider as unknown as {
+        languageModel: (id: string) => { config: { fetch?: typeof fetch } }
+      }
+    ).languageModel('claude-opus-5').config
+
+    await options.fetch!('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      body: JSON.stringify({ messages: [], system: 'You are helpful.' }),
+    })
+
+    const body = JSON.parse(captured!.body as string)
+    expect(
+      body.system.some(
+        (block: { text: string }) =>
+          block.text === CLAUDE_CODE_CONCISE_OUTPUT_STYLE,
+      ),
+    ).toBe(false)
   })
 
   test('preserves cost tiers while zeroing subscription costs', async () => {
@@ -579,6 +640,38 @@ describe('OAuth fetch adapter', () => {
     expect(headers.get('x-api-key')).toBeNull()
     const rewrittenBody = JSON.parse(capturedInit!.body as string)
     expect(rewrittenBody.tools[0].name).toBe('mcp_Bash')
+    expect(rewrittenBody.system.at(-1).text).toBe(
+      CLAUDE_CODE_CONCISE_OUTPUT_STYLE,
+    )
     expect(await response.text()).toContain('"name": "bash"')
+  })
+
+  test('can preserve OpenCode default output style', async () => {
+    let capturedInit: RequestInit | undefined
+    const upstream = mock(
+      (_input: string | URL | Request, init?: RequestInit) => {
+        capturedInit = init
+        return Promise.resolve(new Response('ok'))
+      },
+    )
+    const oauthFetch = createOAuthFetch('oauth-access', upstream, {
+      outputStyle: 'Default',
+    })
+
+    await oauthFetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: 'hello' }],
+        system: 'You are helpful.',
+      }),
+    })
+
+    const rewrittenBody = JSON.parse(capturedInit!.body as string)
+    expect(
+      rewrittenBody.system.some(
+        (block: { text: string }) =>
+          block.text === CLAUDE_CODE_CONCISE_OUTPUT_STYLE,
+      ),
+    ).toBe(false)
   })
 })

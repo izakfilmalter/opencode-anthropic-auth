@@ -7,15 +7,30 @@ import {
 } from '@opencode-ai/plugin/effect'
 import { Data, Duration, Effect, Schedule, Semaphore, Stream } from 'effect'
 import { authorize, exchange } from './auth.ts'
-import { AUTH_TYPE_METADATA, CLIENT_ID, TOKEN_URL } from './constants.ts'
+import {
+  AUTH_TYPE_METADATA,
+  CLIENT_ID,
+  OUTPUT_STYLE_METADATA,
+  TOKEN_URL,
+} from './constants.ts'
 import { createOAuthFetch, type FetchLike } from './oauth-fetch.ts'
 
 export { AUTH_TYPE_METADATA } from './constants.ts'
-export { createOAuthFetch } from './oauth-fetch.ts'
+export {
+  createOAuthFetch,
+  type OAuthFetchOptions,
+} from './oauth-fetch.ts'
+export type { ClaudeOutputStyle } from './transform.ts'
 
 const INTEGRATION_ID = 'anthropic'
 const MAX_METHOD_ID = 'claude-max'
 const API_KEY_METHOD_ID = 'create-api-key'
+
+function resolveOutputStyle(value: unknown): 'Default' | 'Concise' {
+  if (value === undefined || value === 'Concise') return 'Concise'
+  if (value === 'Default') return 'Default'
+  throw new Error('Invalid outputStyle option: expected "Concise" or "Default"')
+}
 
 /**
  * An importable AI SDK shim keeps Anthropic models on OpenCode's generic AI SDK
@@ -331,6 +346,7 @@ async function exchangeAPIKeyCredential(
 export const AnthropicAuthPlugin = Plugin.define({
   id: 'ex-machina.anthropic-auth',
   effect: Effect.fn(function* (ctx) {
+    const outputStyle = resolveOutputStyle(ctx.options.outputStyle)
     const refresh = createCredentialRefresher()
     const loading = Semaphore.makeUnsafe(1)
 
@@ -409,6 +425,10 @@ export const AnthropicAuthPlugin = Plugin.define({
     yield* ctx.catalog.transform((catalog) => {
       catalog.provider.update(INTEGRATION_ID, (provider) => {
         provider.package = ANTHROPIC_AUTH_PACKAGE
+        provider.settings = {
+          ...provider.settings,
+          [OUTPUT_STYLE_METADATA]: outputStyle,
+        }
       })
 
       const record = catalog.provider.get(INTEGRATION_ID)
@@ -439,7 +459,11 @@ export const AnthropicAuthPlugin = Plugin.define({
           yield* ctx.catalog.reload()
         }
 
-        const { [AUTH_TYPE_METADATA]: _authType, ...options } = event.options
+        const {
+          [AUTH_TYPE_METADATA]: _authType,
+          [OUTPUT_STYLE_METADATA]: _outputStyle,
+          ...options
+        } = event.options
         if (!oauth) {
           event.sdk = createAnthropic(options)
           return
@@ -457,7 +481,9 @@ export const AnthropicAuthPlugin = Plugin.define({
             : undefined
         event.sdk = createAnthropic({
           ...options,
-          fetch: createOAuthFetch(accessToken, upstream) as typeof fetch,
+          fetch: createOAuthFetch(accessToken, upstream, {
+            outputStyle,
+          }) as typeof fetch,
         })
       }),
     )

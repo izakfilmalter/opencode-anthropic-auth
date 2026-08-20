@@ -49,6 +49,25 @@ manual API key option:
 
 ## Configuration
 
+Claude Pro/Max requests use Claude Code's **Concise** output style by default.
+To keep OpenCode's normal response style, configure the plugin with
+`outputStyle: "Default"`:
+
+```json
+{
+  "plugins": [
+    {
+      "package": "@ex-machina/opencode-anthropic-auth",
+      "options": { "outputStyle": "Default" }
+    }
+  ]
+}
+```
+
+Supported values are `"Concise"` and `"Default"`, matching Claude Code's names.
+
+### Environment variables
+
 The plugin supports the following environment variables:
 
 | Variable                          | Description                                                                                                                                                                                 |
@@ -66,6 +85,7 @@ For Claude Pro/Max authentication, the plugin:
 4. Injects the required OAuth headers and beta flags into API requests
 5. Sanitizes the system prompt for compatibility (see below)
 6. Zeros out model costs (since usage is covered by the subscription)
+7. Appends Claude Code's Concise output-style instructions by default
 
 ### System Prompt Sanitization
 
@@ -75,7 +95,7 @@ The Anthropic API for Max subscriptions has specific requirements for the system
 2. **Paragraph removal by anchor** — Any paragraph containing a known URL anchor (e.g. `github.com/anomalyco/opencode`, `opencode.ai/docs`) is removed entirely. This is resilient to upstream rewording — as long as the anchor URL appears somewhere in the paragraph, the removal works regardless of surrounding text changes.
 3. **Inline text replacements** — Short branded strings inside paragraphs we want to keep are replaced (e.g. "OpenCode" → "the assistant" in the professional objectivity section).
 
-Everything else in the system prompt is preserved: tone/style guidance, task management instructions, tool usage policy, environment info, skills, user/project instructions, and file paths containing "opencode". The sanitized system prompt is structured as three blocks in `system[]`: the billing header, the Claude Code identity line, and the remaining system content.
+Everything else in the system prompt is preserved: tone/style guidance, task management instructions, tool usage policy, environment info, skills, user/project instructions, and file paths containing "opencode". The sanitized system prompt is structured in `system[]` as the billing header, the Claude Code identity line, the remaining system content, and (by default) the Concise output-style instructions.
 
 ## Development
 
