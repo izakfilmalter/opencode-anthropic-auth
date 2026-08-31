@@ -110,7 +110,7 @@ bun run dev
 This does three things:
 
 1. Builds the plugin
-2. Symlinks the build output into `.opencode/plugins/` so OpenCode loads it as a local plugin
+2. Symlinks the `dist/` directory into `.opencode/plugins/` so OpenCode loads it as a local plugin
 3. Starts `tsc --watch` for automatic rebuilds on source changes
 
 After starting the dev script, restart OpenCode in this project directory to pick up the local build. Any edits to `src/` will trigger a rebuild — restart OpenCode again to load the new version.
