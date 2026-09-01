@@ -45,12 +45,19 @@ Focus text output on:
 
 If you can say it in one sentence, don't use three. Prefer short, direct sentences over long explanations. This does not apply to code or tool calls.`
 
+/**
+ * Claude Code adds this block for the 5.1 Fable and Mythos model families.
+ */
+export const CLAUDE_CODE_REPORTING_OUTCOMES = `# Reporting outcomes
+
+Report what actually happened, not what you intended. When you say something is done, sent, saved, fixed, or verified, that claim must rest on a result you observed in this session — tool output, the file as it now reads, the page as it now loads — not on what the step should have produced. If you did not check, say you did not check. If any step failed, was skipped, or came back different from what you expected, say so in the first sentence of your report, before anything else, even when the rest of the work succeeded. Never quietly work around a failure in a way that makes it look resolved; a problem the user can see is recoverable, one your summary hides is not. When you stop before the task is complete, your first line says so plainly and names what is left. Do not describe partial work as done, and do not let a summary read as more certain than the evidence behind it.`
+
 export const CCH_SALT = '59cf53e54c78'
 export const CCH_POSITIONS = [4, 7, 20]
-export const CLAUDE_CODE_VERSION = '2.1.87'
+export const CLAUDE_CODE_VERSION = '2.1.257'
 export const CLAUDE_CODE_ENTRYPOINT = 'sdk-cli'
 
-export const USER_AGENT = 'claude-cli/2.1.87 (external, cli)'
+export const USER_AGENT = `claude-cli/${CLAUDE_CODE_VERSION} (external, cli)`
 
 /**
  * Anchors that identify paragraphs to remove from the system prompt.

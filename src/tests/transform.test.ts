@@ -3,11 +3,13 @@ import dedent from 'dedent'
 import {
   CLAUDE_CODE_CONCISE_OUTPUT_STYLE,
   CLAUDE_CODE_IDENTITY,
+  CLAUDE_CODE_REPORTING_OUTCOMES,
   OPENCODE_IDENTITY_PREFIX,
   REQUIRED_BETAS,
 } from '../constants'
 import {
   appendConciseOutputStyle,
+  appendReportingOutcomes,
   createStrippedStream,
   isInsecure,
   mergeBetaHeaders,
@@ -121,6 +123,12 @@ describe('setOAuthHeaders', () => {
     const headers = new Headers()
     setOAuthHeaders(headers, 'token')
     expect(headers.get('user-agent')).toContain('claude-cli')
+  })
+
+  test('advertises a Claude Code version that supports Fable 5.1', () => {
+    const headers = new Headers()
+    setOAuthHeaders(headers, 'token')
+    expect(headers.get('user-agent')).toBe('claude-cli/2.1.257 (external, cli)')
   })
 
   test('removes x-api-key', () => {
@@ -641,6 +649,47 @@ describe('prependClaudeCodeIdentity', () => {
 })
 
 describe('rewriteRequestBody', () => {
+  test('adds Claude Code reporting guidance for Fable 5.1', () => {
+    const body = JSON.stringify({
+      model: 'claude-fable-5-1',
+      messages: [{ role: 'user', content: 'hello' }],
+      system: 'Project instructions',
+    })
+
+    const result = JSON.parse(rewriteRequestBody(body))
+
+    expect(result.model).toBe('claude-fable-5-1')
+    expect(result.system[1].text).toBe(CLAUDE_CODE_IDENTITY)
+    expect(result.system[2].text).toBe(CLAUDE_CODE_REPORTING_OUTCOMES)
+    expect(result.system[3].text).toBe('Project instructions')
+    expect(
+      result.system.filter(
+        (block: { text: string }) =>
+          block.text === CLAUDE_CODE_REPORTING_OUTCOMES,
+      ),
+    ).toHaveLength(1)
+  })
+
+  test('adds reporting guidance for dated Fable and Mythos 5.1 aliases', () => {
+    const system = [{ type: 'text', text: CLAUDE_CODE_IDENTITY }]
+
+    for (const model of [
+      'claude-fable-5-1-20260901',
+      'claude-mythos-5-1-latest',
+    ]) {
+      expect(appendReportingOutcomes(system, model)[1]?.text).toBe(
+        CLAUDE_CODE_REPORTING_OUTCOMES,
+      )
+    }
+  })
+
+  test('does not add Fable 5.1 guidance to other models', () => {
+    const system = [{ type: 'text', text: CLAUDE_CODE_IDENTITY }]
+
+    expect(appendReportingOutcomes(system, 'claude-fable-5')).toBe(system)
+    expect(appendReportingOutcomes(system, 'claude-opus-5-1')).toBe(system)
+  })
+
   test('defaults to Claude Code concise output style', () => {
     const body = JSON.stringify({
       messages: [{ role: 'user', content: 'hello' }],

@@ -5,6 +5,7 @@ import {
   computeVersionSuffix,
   extractFirstUserMessageText,
 } from '../cch'
+import { CLAUDE_CODE_VERSION } from '../constants'
 
 describe('billing header helpers', () => {
   test('extracts text from the first user message', () => {
@@ -41,6 +42,19 @@ describe('billing header helpers', () => {
       ),
     ).toBe(
       'x-anthropic-billing-header: cc_version=2.1.87.6ff; cc_entrypoint=sdk-cli; cch=4ffc3;',
+    )
+  })
+
+  test('uses a Claude Code version that supports Fable 5.1 by default', () => {
+    expect(CLAUDE_CODE_VERSION).toBe('2.1.257')
+    expect(
+      buildBillingHeaderValue(
+        [{ role: 'user', content: 'hello world test message' }],
+        undefined,
+        'sdk-cli',
+      ),
+    ).toBe(
+      'x-anthropic-billing-header: cc_version=2.1.257.500; cc_entrypoint=sdk-cli; cch=4ffc3;',
     )
   })
 })

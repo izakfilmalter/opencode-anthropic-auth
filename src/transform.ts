@@ -3,6 +3,7 @@ import {
   CLAUDE_CODE_CONCISE_OUTPUT_STYLE,
   CLAUDE_CODE_ENTRYPOINT,
   CLAUDE_CODE_IDENTITY,
+  CLAUDE_CODE_REPORTING_OUTCOMES,
   OPENCODE_IDENTITY_PREFIX,
   PARAGRAPH_REMOVAL_ANCHORS,
   REQUIRED_BETAS,
@@ -445,6 +446,33 @@ export function appendConciseOutputStyle(system: SystemBlock[]): SystemBlock[] {
 }
 
 /**
+ * Match Claude Code's model-specific reporting guidance for 5.1 Fable/Mythos.
+ * Dated and future aliases retain the same leading model identifier.
+ */
+export function appendReportingOutcomes(
+  system: SystemBlock[],
+  model: unknown,
+): SystemBlock[] {
+  if (
+    typeof model !== 'string' ||
+    !/^claude-(?:fable|mythos)-5-1(?:-|$)/.test(model) ||
+    system.some((block) => block.text === CLAUDE_CODE_REPORTING_OUTCOMES)
+  ) {
+    return system
+  }
+
+  const identityIndex = system.findIndex(
+    (block) => block.text === CLAUDE_CODE_IDENTITY,
+  )
+  const insertAt = identityIndex < 0 ? 0 : identityIndex + 1
+  return [
+    ...system.slice(0, insertAt),
+    { type: 'text', text: CLAUDE_CODE_REPORTING_OUTCOMES },
+    ...system.slice(insertAt),
+  ]
+}
+
+/**
  * Rewrite the full request body: sanitize system prompt and prefix tool names.
  */
 export function rewriteRequestBody(
@@ -467,6 +495,7 @@ export function rewriteRequestBody(
 
     // Sanitize system prompt and prepend Claude Code identity
     parsed.system = prependClaudeCodeIdentity(parsed.system)
+    parsed.system = appendReportingOutcomes(parsed.system, parsed.model)
     if (outputStyle === 'Concise') {
       parsed.system = appendConciseOutputStyle(parsed.system)
     }
