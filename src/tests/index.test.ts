@@ -692,6 +692,53 @@ describe('credential refresh', () => {
 })
 
 describe('OAuth fetch adapter', () => {
+  test('advertises a Claude Code version accepted by Opus 5.5', async () => {
+    const upstream = mock(
+      (_input: string | URL | Request, init?: RequestInit) => {
+        const userAgent = new Headers(init?.headers).get('user-agent') ?? ''
+        const body = JSON.parse(init?.body as string)
+        const billingHeader = body.system[0].text as string
+        const accepted =
+          userAgent.startsWith('claude-cli/2.1.280 ') &&
+          billingHeader.startsWith(
+            'x-anthropic-billing-header: cc_version=2.1.280.',
+          )
+        return Promise.resolve(
+          accepted
+            ? Response.json({
+                type: 'message',
+                model: 'claude-opus-5-5',
+                content: [{ type: 'text', text: 'ok' }],
+                stop_reason: 'end_turn',
+                usage: { input_tokens: 1, output_tokens: 1 },
+              })
+            : new Response(
+                'Claude Code 2.1.257 does not support this model; version 2.1.280 or newer is required.',
+                { status: 400 },
+              ),
+        )
+      },
+    )
+    const provider = createAnthropicAuth({
+      apiKey: 'oauth-access',
+      opencodeAnthropicAuthType: 'oauth',
+      fetch: upstream,
+    })
+    const response = await provider
+      .languageModel('claude-opus-5-5')
+      .doGenerate({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }],
+      })
+
+    expect(response.content).toEqual([{ type: 'text', text: 'ok' }])
+    expect(JSON.parse(upstream.mock.calls[0]![1]!.body as string).model).toBe(
+      'claude-opus-5-5',
+    )
+    expect(
+      JSON.parse(upstream.mock.calls[0]![1]!.body as string).max_tokens,
+    ).toBe(128_000)
+  })
+
   test('rewrites OAuth headers, body, URL, and streamed tool names', async () => {
     let capturedUrl = ''
     let capturedInit: RequestInit | undefined

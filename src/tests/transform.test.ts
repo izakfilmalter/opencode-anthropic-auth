@@ -125,10 +125,10 @@ describe('setOAuthHeaders', () => {
     expect(headers.get('user-agent')).toContain('claude-cli')
   })
 
-  test('advertises a Claude Code version that supports Fable 5.1', () => {
+  test('advertises a Claude Code version that supports Opus 5.5', () => {
     const headers = new Headers()
     setOAuthHeaders(headers, 'token')
-    expect(headers.get('user-agent')).toBe('claude-cli/2.1.257 (external, cli)')
+    expect(headers.get('user-agent')).toBe('claude-cli/2.1.280 (external, cli)')
   })
 
   test('removes x-api-key', () => {

@@ -45,8 +45,8 @@ describe('billing header helpers', () => {
     )
   })
 
-  test('uses a Claude Code version that supports Fable 5.1 by default', () => {
-    expect(CLAUDE_CODE_VERSION).toBe('2.1.257')
+  test('uses a Claude Code version that supports Opus 5.5 by default', () => {
+    expect(CLAUDE_CODE_VERSION).toBe('2.1.280')
     expect(
       buildBillingHeaderValue(
         [{ role: 'user', content: 'hello world test message' }],
@@ -54,7 +54,7 @@ describe('billing header helpers', () => {
         'sdk-cli',
       ),
     ).toBe(
-      'x-anthropic-billing-header: cc_version=2.1.257.500; cc_entrypoint=sdk-cli; cch=4ffc3;',
+      'x-anthropic-billing-header: cc_version=2.1.280.f0d; cc_entrypoint=sdk-cli; cch=4ffc3;',
     )
   })
 })

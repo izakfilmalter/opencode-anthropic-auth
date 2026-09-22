@@ -54,7 +54,7 @@ Report what actually happened, not what you intended. When you say something is 
 
 export const CCH_SALT = '59cf53e54c78'
 export const CCH_POSITIONS = [4, 7, 20]
-export const CLAUDE_CODE_VERSION = '2.1.257'
+export const CLAUDE_CODE_VERSION = '2.1.280'
 export const CLAUDE_CODE_ENTRYPOINT = 'sdk-cli'
 
 export const USER_AGENT = `claude-cli/${CLAUDE_CODE_VERSION} (external, cli)`
