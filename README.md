@@ -13,7 +13,7 @@
 An [OpenCode](https://github.com/anomalyco/opencode) plugin that provides Anthropic OAuth authentication, enabling Claude Pro/Max users to use their subscription directly with OpenCode.
 
 > [!NOTE]
-> This version targets the [OpenCode V2 beta plugin API](https://v2.opencode.ai/docs/build/plugins/). It is not compatible with the legacy `plugin` configuration field or the V1 plugin API.
+> This version targets the [OpenCode V2 plugin API](https://opencode.ai/v2/docs/build/plugins/). It is not compatible with the legacy `plugin` configuration field or the V1 plugin API.
 
 ## Usage
 
@@ -46,6 +46,10 @@ manual API key option:
 - **Claude Pro/Max** - OAuth flow via `claude.ai` for Pro/Max subscribers. Uses your existing subscription at no additional API cost.
 - **Create an API Key** - OAuth flow via `console.anthropic.com` that creates an API key on your behalf.
 - **Manually enter API Key** - Standard API key entry for users who already have one.
+
+## Claude Opus 5.5
+
+Select `anthropic/claude-opus-5-5` in OpenCode after connecting Anthropic. The plugin supplies this model when OpenCode's model catalog has not yet listed it, with a 1M-token context window, 128K max output, and `low` through `max` effort variants. Once OpenCode lists the model, its catalog definition takes precedence. Opus 5.5 requires adaptive thinking and does not accept forced tool choice.
 
 ## Configuration
 

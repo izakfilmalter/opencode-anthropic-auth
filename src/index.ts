@@ -1,10 +1,5 @@
 import { createAnthropic } from '@ai-sdk/anthropic'
-import {
-  Credential,
-  Integration,
-  Model,
-  Plugin,
-} from '@opencode-ai/plugin/effect'
+import { Credential, Integration, Model, Plugin } from '@opencode/plugin/effect'
 import { Data, Duration, Effect, Schedule, Semaphore, Stream } from 'effect'
 import { authorize, exchange } from './auth.ts'
 import {
@@ -25,6 +20,7 @@ export type { ClaudeOutputStyle } from './transform.ts'
 const INTEGRATION_ID = 'anthropic'
 const MAX_METHOD_ID = 'claude-max'
 const API_KEY_METHOD_ID = 'create-api-key'
+const OPUS_55_MODEL_ID = 'claude-opus-5-5'
 
 function resolveOutputStyle(value: unknown): 'Default' | 'Concise' {
   if (value === undefined || value === 'Concise') return 'Concise'
@@ -422,8 +418,8 @@ export const AnthropicAuthPlugin = Plugin.define({
       }),
     )
 
-    yield* ctx.catalog.transform((catalog) => {
-      catalog.provider.update(INTEGRATION_ID, (provider) => {
+    yield* ctx.provider.transform((providers) => {
+      providers.update(INTEGRATION_ID, (provider) => {
         provider.package = ANTHROPIC_AUTH_PACKAGE
         provider.settings = {
           ...provider.settings,
@@ -431,11 +427,50 @@ export const AnthropicAuthPlugin = Plugin.define({
         }
       })
 
-      const record = catalog.provider.get(INTEGRATION_ID)
+      const record = providers.get(INTEGRATION_ID)
       for (const modelID of record?.models.keys() ?? []) {
-        catalog.model.update(INTEGRATION_ID, modelID, (draft) => {
+        providers.models.update(INTEGRATION_ID, modelID, (draft) => {
           draft.package = ANTHROPIC_AUTH_PACKAGE
-          if (!usingSubscription) return
+        })
+      }
+
+      // The upstream model catalog can lag a new release. Only supply a model
+      // definition while it is missing; retain upstream metadata once available.
+      if (record && !record.models.has(OPUS_55_MODEL_ID)) {
+        providers.models.update(INTEGRATION_ID, OPUS_55_MODEL_ID, (draft) => {
+          draft.name = 'Claude Opus 5.5'
+          draft.family = Model.Family.make('claude-opus')
+          draft.package = ANTHROPIC_AUTH_PACKAGE
+          draft.time.released = Date.UTC(2026, 8, 22)
+          draft.capabilities.input = ['text', 'image', 'pdf']
+          draft.limit = { context: 1_000_000, output: 128_000 }
+          draft.variants = ['low', 'medium', 'high', 'xhigh', 'max'].map(
+            (effort) => ({
+              id: Model.VariantID.make(effort),
+              settings: {
+                thinking: { type: 'adaptive', display: 'summarized' },
+                effort,
+              },
+            }),
+          )
+          draft.cost = [
+            {
+              input: Model.Cost.fields.input.make(4),
+              output: Model.Cost.fields.output.make(20),
+              cache: {
+                read: Model.Cost.fields.cache.fields.read.make(0.2),
+                write: Model.Cost.fields.cache.fields.write.make(5),
+              },
+            },
+          ]
+        })
+      }
+    })
+
+    yield* ctx.model.transform((models) => {
+      if (!usingSubscription) return
+      for (const model of models.list(INTEGRATION_ID)) {
+        models.update(INTEGRATION_ID, model.id, (draft) => {
           draft.cost = draft.cost.map((cost) => ({
             ...cost,
             input: Model.Cost.fields.input.zero,
@@ -456,7 +491,7 @@ export const AnthropicAuthPlugin = Plugin.define({
         const oauth = event.options[AUTH_TYPE_METADATA] === 'oauth'
         if (usingSubscription !== oauth) {
           usingSubscription = oauth
-          yield* ctx.catalog.reload()
+          yield* ctx.model.reload()
         }
 
         const {
@@ -494,7 +529,7 @@ export const AnthropicAuthPlugin = Plugin.define({
           const active = yield* subscriptionActive()
           if (usingSubscription === active) return
           usingSubscription = active
-          yield* ctx.catalog.reload()
+          yield* ctx.model.reload()
         }),
       )
 
@@ -504,7 +539,7 @@ export const AnthropicAuthPlugin = Plugin.define({
     yield* ctx.event.subscribe().pipe(
       Stream.filter(
         (event) =>
-          event.type === 'integration.connection.updated' &&
+          event.type === 'credential.switched' &&
           event.data.integrationID === INTEGRATION_ID,
       ),
       Stream.runForEach(refreshSubscription),

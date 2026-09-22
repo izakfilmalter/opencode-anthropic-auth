@@ -46,7 +46,7 @@
   },
   "dependencies": {
     "@ai-sdk/anthropic": "3.0.109",
-    "@opencode-ai/plugin": "0.0.0-beta-17577",
-    "effect": "4.0.0-beta.107"
+    "@opencode/plugin": "2.0.4",
+    "effect": "4.0.0-rc.112"
   }
 }

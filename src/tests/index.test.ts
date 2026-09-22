@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
-import { Integration } from '@opencode-ai/plugin'
+import { Integration, Model, Provider } from '@opencode/plugin'
 import { Effect, type Scope, Stream } from 'effect'
 import { CLAUDE_CODE_CONCISE_OUTPUT_STYLE } from '../constants'
 import AnthropicAuthPlugin, {
@@ -21,7 +21,8 @@ function createMockContext(
 ) {
   const captured: {
     integration?: Callback
-    catalog?: Callback
+    provider?: Callback
+    model?: Callback
     sdk?: Callback
   } = {}
   const registration = { dispose: Effect.void }
@@ -48,9 +49,16 @@ function createMockContext(
           resolve: mock(() => Effect.succeed(credential)),
         },
       },
-      catalog: {
+      provider: {
         transform: mock((callback: Callback) => {
-          captured.catalog = callback
+          captured.provider = callback
+          return Effect.succeed(registration)
+        }),
+        reload,
+      },
+      model: {
+        transform: mock((callback: Callback) => {
+          captured.model = callback
           return Effect.succeed(registration)
         }),
         reload,
@@ -113,7 +121,11 @@ function applyIntegrationTransform(callback: Callback) {
   return { integration, methods }
 }
 
-function applyCatalogTransform(callback: Callback) {
+function applyModelTransforms(
+  providerCallback: Callback,
+  modelCallback: Callback,
+  upstreamOpus55?: Model.Info,
+) {
   const provider = {
     id: 'anthropic',
     name: 'Anthropic',
@@ -132,24 +144,42 @@ function applyCatalogTransform(callback: Callback) {
       },
     ],
   }
-  const models = new Map([[model.id, model]])
-  callback({
+  const models = new Map<string, any>([[model.id, model]])
+  if (upstreamOpus55) models.set(upstreamOpus55.id, upstreamOpus55)
+  providerCallback({
+    list: () => [{ provider, models }],
+    get: () => ({ provider, models }),
+    update: (_id: string, update: (value: typeof provider) => void) =>
+      update(provider),
+    remove: () => {},
+    models: {
+      set: () => {},
+      update: (_providerID: string, modelID: string, update: Callback) => {
+        const draft =
+          models.get(modelID) ??
+          Model.Info.default(
+            Provider.ID.make('anthropic'),
+            Model.ID.make(modelID),
+          )
+        update(draft)
+        models.set(modelID, draft)
+      },
+      remove: () => {},
+    },
+  })
+  modelCallback({
+    list: () => [...models.values()],
+    get: (_providerID: string, modelID: string) => models.get(modelID),
+    update: (_providerID: string, modelID: string, update: Callback) =>
+      update(models.get(modelID)),
+    remove: () => {},
+    default: { get: () => undefined, set: () => {} },
     provider: {
       list: () => [{ provider, models }],
       get: () => ({ provider, models }),
-      update: (_id: string, update: (value: typeof provider) => void) =>
-        update(provider),
-      remove: () => {},
-    },
-    model: {
-      get: () => model,
-      update: (_providerID: string, _modelID: string, update: Callback) =>
-        update(model),
-      remove: () => {},
-      default: { get: () => undefined, set: () => {} },
     },
   })
-  return { provider, model }
+  return { provider, model, models }
 }
 
 async function setup(
@@ -225,17 +255,67 @@ describe('V2 plugin definition', () => {
 
   test('routes Anthropic models through the synthetic AI SDK package', async () => {
     const { captured } = await setup()
-    const { provider, model } = applyCatalogTransform(captured.catalog!)
+    const { provider, model, models } = applyModelTransforms(
+      captured.provider!,
+      captured.model!,
+    )
 
     expect(provider.package).toBe(ANTHROPIC_AUTH_PACKAGE)
     expect(provider.settings.opencodeAnthropicOutputStyle).toBe('Concise')
     expect(model.package).toBe(ANTHROPIC_AUTH_PACKAGE)
     expect(model.cost[0]!.input).toBe(3)
+    expect(models.get('claude-opus-5-5')).toMatchObject({
+      id: 'claude-opus-5-5',
+      modelID: 'claude-opus-5-5',
+      name: 'Claude Opus 5.5',
+      package: ANTHROPIC_AUTH_PACKAGE,
+      capabilities: {
+        tools: true,
+        input: ['text', 'image', 'pdf'],
+        output: ['text'],
+      },
+      limit: { context: 1_000_000, output: 128_000 },
+      cost: [{ input: 4, output: 20, cache: { read: 0.2, write: 5 } }],
+    })
+    expect(
+      models
+        .get('claude-opus-5-5')
+        .variants.map((variant: Model.Variant) => variant.id.toString()),
+    ).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+    expect(models.get('claude-opus-5-5').variants[0].settings.thinking).toEqual(
+      {
+        type: 'adaptive',
+        display: 'summarized',
+      },
+    )
+  })
+
+  test('keeps upstream Opus 5.5 metadata when the catalog includes it', async () => {
+    const upstream = {
+      ...Model.Info.default(
+        Provider.ID.make('anthropic'),
+        Model.ID.make('claude-opus-5-5'),
+      ),
+      name: 'Upstream Opus 5.5',
+      limit: { context: 1_000_000, output: 128_000 },
+    }
+    const { captured } = await setup()
+    const { models } = applyModelTransforms(
+      captured.provider!,
+      captured.model!,
+      upstream,
+    )
+
+    expect(models.get('claude-opus-5-5').name).toBe('Upstream Opus 5.5')
+    expect(models.get('claude-opus-5-5').package).toBe(ANTHROPIC_AUTH_PACKAGE)
   })
 
   test('passes the default output-style opt-out to the provider shim', async () => {
     const { captured } = await setup(undefined, { outputStyle: 'Default' })
-    const { provider } = applyCatalogTransform(captured.catalog!)
+    const { provider } = applyModelTransforms(
+      captured.provider!,
+      captured.model!,
+    )
 
     expect(provider.settings.opencodeAnthropicOutputStyle).toBe('Default')
   })
@@ -268,7 +348,7 @@ describe('V2 plugin definition', () => {
       provider as unknown as {
         languageModel: (id: string) => { config: { fetch?: typeof fetch } }
       }
-    ).languageModel('claude-opus-5').config
+    ).languageModel('claude-opus-5-5').config
     await options.fetch!('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': 'oauth-access' },
@@ -298,7 +378,7 @@ describe('V2 plugin definition', () => {
       provider as unknown as {
         languageModel: (id: string) => { config: { fetch?: typeof fetch } }
       }
-    ).languageModel('claude-opus-5').config
+    ).languageModel('claude-opus-5-5').config
 
     await options.fetch!('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -324,7 +404,10 @@ describe('V2 plugin definition', () => {
       metadata: { opencodeAnthropicAuthType: 'oauth' },
     }
     const { captured } = await setup(credential)
-    const { model } = applyCatalogTransform(captured.catalog!)
+    const { model, models } = applyModelTransforms(
+      captured.provider!,
+      captured.model!,
+    )
 
     expect(model.cost).toEqual([
       {
@@ -333,6 +416,9 @@ describe('V2 plugin definition', () => {
         output: 0,
         cache: { read: 0, write: 0 },
       },
+    ])
+    expect(models.get('claude-opus-5-5').cost).toEqual([
+      { input: 0, output: 0, cache: { read: 0, write: 0 } },
     ])
   })
 
